@@ -29,7 +29,6 @@ which should easily be ported to libraries supporting sparse-matrix operations.
 '''
 from __future__ import division
 import itertools
-import math
 import pandas as pd
 import numpy as np
 from scipy.stats import itemfreq
@@ -37,7 +36,7 @@ import scipy.sparse as sparse
 
 from cyplace_experiments.data import open_netlists_h5f
 from .CAMIP import (evaluate_moves, VPRMovePattern, VPRAutoSlotKeyTo2dPosition,
-                    Extent2D)
+                    Extent2D, slot_moves, extract_positions)
 
 try:
     profile
@@ -166,6 +165,7 @@ class CAMIP(object):
         # Create reverse-mapping, from each block-key to the permutation slot
         # the block occupies.
         self.block_slot_keys = np.empty(netlist.block_count, dtype=np.uint32)
+        self.block_slot_moves = np.empty(netlist.block_count, dtype=np.int32)
         self.block_slot_keys_prime = np.empty_like(self.block_slot_keys)
         self._sync_slot_block_keys_to_block_slot_keys()
 
@@ -226,13 +226,9 @@ class CAMIP(object):
          - Each net _(`self.e_c`)_.
          - The complete placement _(`self.theta`)_.
         '''
-        netlist = self.netlist
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments.
-        for i in xrange(netlist.block_count):
-            position = self.s2p[self.block_slot_keys[i]]
-            self.p_x[i] = position.x
-            self.p_y[i] = position.y
+        extract_positions(self.p_x, self.p_y, self.block_slot_keys, self.s2p)
 
         self.X.data[:] = self.p_x[self.X.row]
         self.Y.data[:] = self.p_y[self.Y.row]
@@ -251,7 +247,8 @@ class CAMIP(object):
         self.theta = self.e_c.sum()
 
         # `omega`: $\Omega \in \mathbb{M}_{mn}$, $\omega_{ij} = e_cj$.
-        self.omega.data[:] = map(self.e_c.A.ravel().__getitem__, netlist.C.col)
+        self.omega.data[:] = map(self.e_c.A.ravel().__getitem__,
+                                 self.netlist.C.col)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
@@ -260,24 +257,17 @@ class CAMIP(object):
 
     @profile
     def propose_moves(self, seed):
-        netlist = self.netlist
         np.random.seed(seed)
         self.move_pattern = random_vpr_pattern(self.s2p)
+        slot_moves(self.block_slot_moves, self.block_slot_keys,
+                   self.move_pattern)
+        self.block_slot_keys_prime[:] = (self.block_slot_keys +
+                                         self.block_slot_moves)
 
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments.
-        for i in xrange(netlist.block_count):
-            block_slot_key = self.block_slot_keys[i]
-            position = self.s2p[block_slot_key +
-                                self.move_pattern[block_slot_key]]
-            self.p_x_prime[i] = position.x
-            self.p_y_prime[i] = position.y
-
-        block_slot_moves = (
-            np.fromiter(itertools.imap(self.move_pattern.__getitem__,
-                                       self.block_slot_keys), dtype=np.int32,
-                        count=len(self.block_slot_keys)))
-        self.block_slot_keys_prime = self.block_slot_keys + block_slot_moves
+        extract_positions(self.p_x_prime, self.p_y_prime,
+                          self.block_slot_keys_prime, self.s2p)
 
     @profile
     def evaluate_moves(self):

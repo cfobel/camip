@@ -495,3 +495,24 @@ cdef class VPRMovePattern:
 
     property logic_pattern:
         def __get__(self): return self.logic_pattern
+
+
+cpdef slot_moves(int32_t[:] output, uint32_t[:] slot_keys,
+                 VPRMovePattern move_pattern):
+    cdef int i
+
+    for i in xrange(len(output)):
+        output[i] = move_pattern.get(slot_keys[i])
+
+
+cpdef extract_positions(int32_t[:] p_x, int32_t[:] p_y, uint32_t[:] slot_keys,
+                        VPRAutoSlotKeyTo2dPosition s2p):
+    # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on permutation
+    # slot assignments.
+    cdef int i
+    cdef TwoD position
+
+    for i in xrange(len(slot_keys)):
+        position = s2p.get(slot_keys[i])
+        p_x[i] = position.x
+        p_y[i] = position.y
