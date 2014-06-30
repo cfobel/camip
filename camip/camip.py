@@ -485,12 +485,11 @@ class CAMIP(object):
             self.p_x_prime[i] = position['x']
             self.p_y_prime[i] = position['y']
 
-        self.block_slot_keys_prime = np.fromiter((k + self.move_pattern[k]
-                                                  for k in
-                                                  self.block_slot_keys),
-                                                 dtype=np.int32,
-                                                 count=len(self
-                                                           .block_slot_keys))
+        block_slot_moves = (
+            np.fromiter(itertools.imap(self.move_pattern.__getitem__,
+                                       self.block_slot_keys), dtype=np.int32,
+                        count=len(self.block_slot_keys)))
+        self.block_slot_keys_prime = self.block_slot_keys + block_slot_moves
 
     @profile
     def evaluate_moves(self):
@@ -529,6 +528,9 @@ class CAMIP(object):
         unmoved_count = moved_mask.size - moved_mask.sum()
 
         group_block_keys = np.argsort(self.block_group_keys)[:-unmoved_count]
+        if len(group_block_keys) == 0:
+            self.delta_s = np.empty(0)
+            return 0, np.empty(0)
         packed_group_segments = np.empty_like(group_block_keys)
         packed_group_segments[0] = 1
         packed_group_segments[1:] = (self.block_group_keys
@@ -550,6 +552,8 @@ class CAMIP(object):
         return (moved_mask.size - unmoved_count), rejected_block_keys
 
     def apply_groups(self, rejected_move_block_keys):
+        if len(rejected_move_block_keys) == 0:
+            return
         self.block_slot_keys_prime[rejected_move_block_keys] = (
             self.block_slot_keys[rejected_move_block_keys])
         self.block_slot_keys, self.block_slot_keys_prime = (
