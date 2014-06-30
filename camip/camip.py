@@ -36,228 +36,13 @@ from scipy.stats import itemfreq
 import scipy.sparse as sparse
 
 from cyplace_experiments.data import open_netlists_h5f
-from .CAMIP import evaluate_moves
-
+from .CAMIP import (evaluate_moves, VPRMovePattern, VPRAutoSlotKeyTo2dPosition,
+                    Extent2D)
 
 try:
     profile
 except:
     profile = lambda (f): f
-
-
-class SlotKeyTo2dPosition(object):
-    def __init__(self, row_extent, offset=None):
-        if offset is None:
-            self.offset = {'x': 0, 'y': 0}
-        else:
-            self.offset = offset
-        self.row_extent = row_extent
-
-    def __getitem__(self, k):
-        p = {'x': int(k // self.row_extent), 'y': int(k % self.row_extent)}
-        return {'x': int(p['x'] + self.offset['x']),
-                'y': int(p['y'] + self.offset['y'])}
-
-
-class VPRIOSlotKeyTo2dPosition(object):
-    def __init__(self, extent, io_capacity):
-        self.extent = extent
-        self.io_capacity = io_capacity
-
-        io_count = {'row': self.extent['row'] * self.io_capacity,
-                    'column': self.extent['column'] * self.io_capacity}
-        self.segment_start = {'bottom': 0, 'right': io_count['row']}
-        self.segment_start['top'] = (self.segment_start['right'] +
-                                     io_count['column'])
-        self.segment_start['left'] = (self.segment_start['top'] +
-                                      io_count['row'])
-        self._size = 2 * (io_count['column'] + io_count['row'])
-
-    def __len__(self):
-        return self._size
-
-    def __getitem__(self, k):
-        if k < self.segment_start['right']:
-            # Slot `k` maps to position along the 'bottom' of the grid.
-            return {'x': 0, 'y': 1 + k // self.io_capacity}
-        elif k < self.segment_start['top']:
-            # Slot `k` maps to position along the ['right'] side of the grid.
-            return {'x': int(1 + (k - self.segment_start['right']) //
-                             self.io_capacity),
-                    'y': int(self.extent['row'] + 1)}
-        elif k < self.segment_start['left']:
-            # Slot `k` maps to position along the top of the grid.
-            return {'x': int(self.extent['column'] + 1),
-                    'y': int(self.extent['row'] -
-                             (k - self.segment_start['top']) //
-                             self.io_capacity)}
-        else:
-            # Assume slot `k` maps to position along the left of the grid.
-            return {'x': int(self.extent['column'] -
-                             (k - self.segment_start['left']) //
-                             self.io_capacity),
-                    'y': 0}
-
-
-class VPRAutoSlotKeyTo2dPosition(object):
-    def __init__(self, io_count, logic_count, io_capacity=2):
-        self.io_capacity = io_capacity
-        self.io_count = io_count
-        self.logic_count = logic_count
-        self.extent = {}
-        self.extent['row'] = math.ceil(math.sqrt(logic_count))
-        self.extent['column'] = self.extent['row']
-        if 2 * sum(self.extent.values()) * self.io_capacity < io_count:
-            # The size determined based on the number of logic blocks does not
-            # provide enough spots for the inputs/outputs along the perimeter.
-            # Increase extents of the grid to fit IO.
-            self.extent['row'] = math.ceil(math.sqrt(io_count + logic_count))
-            self.extent['column'] = self.extent['row']
-
-        if (io_count > 0):
-            io_extent = self.extent
-        else:
-            io_extent = dict([(k, 0) for k, v in self.extent.iteritems()])
-
-        self.io_s2p = VPRIOSlotKeyTo2dPosition(io_extent, self.io_capacity)
-        self.logic_s2p = SlotKeyTo2dPosition(self.extent['row'],
-                                             {'x': 1, 'y': 1})
-        self.slot_count = {'io': len(self.io_s2p),
-                           'logic': int(np.product(self.extent.values()))}
-
-    def __len__(self):
-        return sum(self.slot_count.values())
-
-    def position0(self, position):
-        return {'x': position['x'] - self.logic_s2p.offset['x'],
-                'y': position['y'] - self.logic_s2p.offset['y']}
-
-    def in_bounds(self, position):
-        p = self.position0(position)
-        return not (p['x'] < 0 or p['x'] >= self.extent['column'] or p['y'] < 0
-                    or p['y'] >= self.extent['row'])
-
-    def __getitem__(self, k):
-        return self.get(k)
-
-    def get0(self, k):
-        return self.position0(self.get(k))
-
-    def get(self, k):
-        if k < len(self.io_s2p):
-            return self.io_s2p[k]
-        else:
-            return self.logic_s2p[k - len(self.io_s2p)]
-
-
-class MovePattern(object):
-    def __init__(self, magnitude, shift=0):
-        self.magnitude = magnitude
-        self.double_magnitude = 2 * magnitude
-        self.shift = shift
-
-    def __getitem__(self, i):
-        if self.magnitude == 0:
-            return 0
-        index = (i + 2 * self.double_magnitude -
-                 ((self.shift + self.magnitude + 1) % self.double_magnitude))
-        if (index % self.double_magnitude) < self.magnitude:
-            return self.magnitude
-        else:
-            return -self.magnitude
-
-
-class MovePattern2d(object):
-    def __init__(self, magnitude, shift, extent):
-        self.patterns = {'row': MovePattern(magnitude['row'], shift['row']),
-                         'column': MovePattern(magnitude['column'],
-                                               shift['column'])}
-        self.extent = extent
-        self.size = extent['row'] * extent['column']
-
-    def column_i(self, i):
-        return ((i // self.extent['row']) + self.extent['column'] *
-                (i % self.extent['row']))
-
-    def column(self, i):
-        return self.patterns['column'][self.column_i(i)]
-
-    def row(self, i):
-        return self.patterns['row'][i]
-
-    def __getitem__(self, i):
-        return {'column': self.column(i), 'row': self.row(i)}
-
-    def __len__(self):
-        return self.size
-
-
-class MovePatternInBounds(object):
-    def __init__(self, extent, magnitude, shift=0):
-        self.extent = extent
-        self.pattern = MovePattern(magnitude, shift)
-
-    def __getitem__(self, i):
-        # We still need to use the offset-based position for computing the
-        # target position.
-        move = self.pattern[i]
-        target = i + move
-        if target < 0 or target >= self.extent:
-            # If the displacement targets a location that is outside the
-            # boundaries, set displacement to zero.
-            return 0
-        return int(move)
-
-    def __len__(self):
-        return self.extent
-
-
-class MovePatternInBounds2d(object):
-    def __init__(self, magnitude, shift, slot_key_to_position):
-        self.s2p = slot_key_to_position
-        self.pattern = MovePattern2d(magnitude, shift, self.s2p.extent)
-        self.patterns = self.pattern.patterns
-
-    def __getitem__(self, i):
-        # Get zero-based position, since displacement patterns are indexed
-        # starting at zero.
-        position0 = self.s2p.get0(i)
-
-        # We still need to use the offset-based position for computing the
-        # target position.
-        position = self.s2p.get(i)
-        move = {'column': self.patterns['column'][position0['x']],
-                'row': self.patterns['row'][position0['y']]}
-        target = {'x': position['x'] + move['column'],
-                  'y': position['y'] + move['row']}
-        if not self.s2p.in_bounds(target):
-            # If the displacement targets a location that is outside the
-            # boundaries, set displacement to zero.
-            return 0
-        return int(move['column'] * self.s2p.extent['row'] + move['row'])
-
-    def __len__(self):
-        return len(self.pattern)
-
-
-class VPRMovePattern(object):
-    def __init__(self, io_magnitude, io_shift, logic_magnitude, logic_shift,
-                 slot_key_to_position):
-        self.s2p = slot_key_to_position
-        self.io_slot_count = self.s2p.slot_count['io']
-        self.io_pattern = MovePatternInBounds(self.io_slot_count,
-                                              io_magnitude, io_shift)
-        self.logic_pattern = MovePatternInBounds2d(logic_magnitude,
-                                                   logic_shift, self.s2p)
-
-    def __getitem__(self, i):
-        if i < self.io_slot_count:
-            return self.io_pattern[i]
-        else:
-            return self.logic_pattern[i]
-
-    def __len__(self):
-        return len(self.s2p)
 
 
 class MatrixNetlist(object):
@@ -314,39 +99,41 @@ def random_pattern_params(max_magnitude, extent, non_zero=True):
 
 
 def random_2d_pattern_params(max_magnitude, vpr_s2p):
-    max_magnitude['row'] = min(vpr_s2p.extent['row'] - 1, max_magnitude['row'])
-    max_magnitude['column'] = min(vpr_s2p.extent['column'] - 1,
-                                  max_magnitude['column'])
-    magnitude = dict([(k, np.random.randint(0, v + 1))
-                      for k, v in max_magnitude.iteritems()])
-    while (magnitude['row'] == 0) and (magnitude['column'] == 0):
-        magnitude = dict([(k, np.random.randint(0, v + 1))
-                          for k, v in max_magnitude.iteritems()])
+    max_magnitude.row = min(vpr_s2p.extent.row - 1, max_magnitude.row)
+    max_magnitude.column = min(vpr_s2p.extent.column - 1, max_magnitude.column)
 
-    shift = {'row': 0, 'column': 0}
+    magnitude = Extent2D()
+    magnitude.row = np.random.randint(0, max_magnitude.row + 1)
+    magnitude.column = np.random.randint(0, max_magnitude.column + 1)
 
-    if magnitude['row'] > 0:
-        max_shift = 2 * magnitude['row'] - 1
-        if vpr_s2p.extent['row'] <= 2 * magnitude['row']:
-            max_shift = magnitude['row'] - 1
-        shift['row'] = np.random.randint(max_shift + 1)
+    while (magnitude.row == 0) and (magnitude.column == 0):
+        magnitude.row = np.random.randint(0, max_magnitude.row + 1)
+        magnitude.column = np.random.randint(0, max_magnitude.column + 1)
 
-    if magnitude['column'] > 0:
-        max_shift = 2 * magnitude['column'] - 1
-        if vpr_s2p.extent['column'] <= 2 * magnitude['column']:
-            max_shift = magnitude['column'] - 1
-        shift['column'] = np.random.randint(max_shift + 1)
+    shift = Extent2D()
+
+    if magnitude.row > 0:
+        max_shift = 2 * magnitude.row - 1
+        if vpr_s2p.extent.row <= 2 * magnitude.row:
+            max_shift = magnitude.row - 1
+        shift.row = np.random.randint(max_shift + 1)
+
+    if magnitude.column > 0:
+        max_shift = 2 * magnitude.column - 1
+        if vpr_s2p.extent.column <= 2 * magnitude.column:
+            max_shift = magnitude.column - 1
+        shift.column = np.random.randint(max_shift + 1)
     return magnitude, shift
 
 
 def random_vpr_pattern(vpr_s2p, max_logic_move=None, max_io_move=None):
-    io_extent = vpr_s2p.slot_count['io']
+    io_extent = vpr_s2p.slot_count.io
     if max_io_move is None:
         max_io_move = io_extent - 1
     io_move, io_shift = random_pattern_params(max_io_move, io_extent)
     if max_logic_move is None:
-        max_logic_move = {'row': vpr_s2p.extent['row'] - 1,
-                          'column': vpr_s2p.extent['column'] - 1}
+        max_logic_move = Extent2D(vpr_s2p.extent.row - 1,
+                                  vpr_s2p.extent.column - 1)
     logic_move, logic_shift = random_2d_pattern_params(max_logic_move, vpr_s2p)
     return VPRMovePattern(io_move, io_shift, logic_move, logic_shift, vpr_s2p)
 
@@ -369,7 +156,7 @@ class CAMIP(object):
                                                          '.output')][:self
                                                                      .io_count]
         # Fill logic slots.
-        logic_start = self.s2p.slot_count['io']
+        logic_start = self.s2p.slot_count.io
         logic_end = logic_start + self.logic_count
         self.slot_block_keys[logic_start:logic_end] = [i for i, t in
                                                        enumerate(netlist
@@ -409,8 +196,8 @@ class CAMIP(object):
         The shuffle is aware of IO and logic slots in the placement, and will
         keep IO and logic within the corresponding areas of the permutation.
         '''
-        np.random.shuffle(self.slot_block_keys[:p.s2p.slot_count['io']])
-        np.random.shuffle(self.slot_block_keys[p.s2p.slot_count['io']:])
+        np.random.shuffle(self.slot_block_keys[:p.s2p.slot_count.io])
+        np.random.shuffle(self.slot_block_keys[p.s2p.slot_count.io:])
         self._sync_slot_block_keys_to_block_slot_keys()
 
     def _sync_block_slot_keys_to_slot_block_keys(self):
@@ -444,8 +231,8 @@ class CAMIP(object):
         # permutation slot assignments.
         for i in xrange(netlist.block_count):
             position = self.s2p[self.block_slot_keys[i]]
-            self.p_x[i] = position['x']
-            self.p_y[i] = position['y']
+            self.p_x[i] = position.x
+            self.p_y[i] = position.y
 
         self.X.data[:] = self.p_x[self.X.row]
         self.Y.data[:] = self.p_y[self.Y.row]
@@ -483,8 +270,8 @@ class CAMIP(object):
             block_slot_key = self.block_slot_keys[i]
             position = self.s2p[block_slot_key +
                                 self.move_pattern[block_slot_key]]
-            self.p_x_prime[i] = position['x']
-            self.p_y_prime[i] = position['y']
+            self.p_x_prime[i] = position.x
+            self.p_y_prime[i] = position.y
 
         block_slot_moves = (
             np.fromiter(itertools.imap(self.move_pattern.__getitem__,

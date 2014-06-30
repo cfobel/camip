@@ -286,9 +286,9 @@ cdef class VPRAutoSlotKeyTo2dPosition:
 
     cdef get(self, k):
         if k < self.slot_count.io:
-            return self.io_s2p[k]
+            return self.io_s2p.get(k)
         else:
-            return self.logic_s2p[k - self.slot_count.io]
+            return self.logic_s2p.get(k - self.slot_count.io)
 
     property slot_count:
         def __get__(self):
@@ -311,111 +311,187 @@ cdef class VPRAutoSlotKeyTo2dPosition:
             return self.io_capacity
 
 
-#class MovePattern(object):
-    #def __init__(self, magnitude, shift=0):
-        #self.magnitude = magnitude
-        #self.double_magnitude = 2 * magnitude
-        #self.shift = shift
+cdef class MovePattern:
+    cdef int magnitude
+    cdef int double_magnitude
+    cdef int shift
 
-    #def __getitem__(self, i):
-        #if self.magnitude == 0:
-            #return 0
-        #index = (i + 2 * self.double_magnitude -
-                 #((self.shift + self.magnitude + 1) % self.double_magnitude))
-        #if (index % self.double_magnitude) < self.magnitude:
-            #return self.magnitude
-        #else:
-            #return -self.magnitude
+    def __cinit__(self, int magnitude, int shift=0):
+        self.magnitude = magnitude
+        self.double_magnitude = 2 * magnitude
+        self.shift = shift
 
+    def __getitem__(self, int i):
+        return self.get(i)
 
-#class MovePattern2d(object):
-    #def __init__(self, magnitude, shift, extent):
-        #self.patterns = {'row': MovePattern(magnitude['row'], shift['row']),
-                         #'column': MovePattern(magnitude['column'],
-                                               #shift['column'])}
-        #self.extent = extent
-        #self.size = extent['row'] * extent['column']
+    cdef inline get(self, int i):
+        if self.magnitude == 0:
+            return 0
+        cdef int index = (i + 2 * self.double_magnitude -
+                          ((self.shift + self.magnitude + 1) %
+                           self.double_magnitude))
+        if (index % self.double_magnitude) < self.magnitude:
+            return self.magnitude
+        else:
+            return -self.magnitude
 
-    #def column_i(self, i):
-        #return ((i // self.extent['row']) + self.extent['column'] *
-                #(i % self.extent['row']))
+    property magnitude:
+        def __get__(self):
+            return self.magnitude
 
-    #def column(self, i):
-        #return self.patterns['column'][self.column_i(i)]
+        def __set__(self, value):
+            self.magnitude = value
+            self.double_magnitude = 2 * self.magnitude
 
-    #def row(self, i):
-        #return self.patterns['row'][i]
+    property shift:
+        def __get__(self):
+            return self.shift
 
-    #def __getitem__(self, i):
-        #return {'column': self.column(i), 'row': self.row(i)}
-
-    #def __len__(self):
-        #return self.size
+        def __set__(self, value):
+            self.shift = value
 
 
-#class MovePatternInBounds(object):
-    #def __init__(self, extent, magnitude, shift=0):
-        #self.extent = extent
-        #self.pattern = MovePattern(magnitude, shift)
+cdef class MovePattern2d:
+    cdef Extent2D extent
+    cdef int size
+    cdef MovePattern row
+    cdef MovePattern column
 
-    #def __getitem__(self, i):
-        ## We still need to use the offset-based position for computing the
-        ## target position.
-        #move = self.pattern[i]
-        #target = i + move
-        #if target < 0 or target >= self.extent:
-            ## If the displacement targets a location that is outside the
-            ## boundaries, set displacement to zero.
-            #return 0
-        #return int(move)
+    def __init__(self, Extent2D magnitude, Extent2D shift, Extent2D extent):
+        self.row = MovePattern(magnitude.row, shift.row)
+        self.column = MovePattern(magnitude.column, shift.column)
+        self.extent = extent
+        self.size = extent.row * extent.column
 
-    #def __len__(self):
-        #return self.extent
+    cdef inline column_i(self, int i):
+        return ((i // self.extent.row) + self.extent.column *
+                (i % self.extent.row))
 
+    cdef inline get_column(self, int i):
+        return self.column.get(self.column_i(i))
 
-#class MovePatternInBounds2d(object):
-    #def __init__(self, magnitude, shift, slot_key_to_position):
-        #self.s2p = slot_key_to_position
-        #self.pattern = MovePattern2d(magnitude, shift, self.s2p.extent)
-        #self.patterns = self.pattern.patterns
+    cdef inline get_row(self, int i):
+        return self.row.get(i)
 
-    #def __getitem__(self, i):
-        ## Get zero-based position, since displacement patterns are indexed
-        ## starting at zero.
-        #position0 = self.s2p.get0(i)
+    cdef inline get(self, int i):
+        return Extent2D(self.get_row(i), self.get_column(i))
 
-        ## We still need to use the offset-based position for computing the
-        ## target position.
-        #position = self.s2p.get(i)
-        #move = {'column': self.patterns['column'][position0['x']],
-                #'row': self.patterns['row'][position0['y']]}
-        #target = {'x': position['x'] + move['column'],
-                  #'y': position['y'] + move['row']}
-        #if not self.s2p.in_bounds(target):
-            ## If the displacement targets a location that is outside the
-            ## boundaries, set displacement to zero.
-            #return 0
-        #return int(move['column'] * self.s2p.extent['row'] + move['row'])
+    def __getitem__(self, int i):
+        return self.get(i)
 
-    #def __len__(self):
-        #return len(self.pattern)
+    def __len__(self):
+        return self.size
+
+    property row:
+        def __get__(self):
+            return self.row
+
+    property column:
+        def __get__(self):
+            return self.column
 
 
-#class VPRMovePattern(object):
-    #def __init__(self, io_magnitude, io_shift, logic_magnitude, logic_shift,
-                 #slot_key_to_position):
-        #self.s2p = slot_key_to_position
-        #self.io_slot_count = self.s2p.slot_count['io']
-        #self.io_pattern = MovePatternInBounds(self.io_slot_count,
-                                              #io_magnitude, io_shift)
-        #self.logic_pattern = MovePatternInBounds2d(logic_magnitude,
-                                                   #logic_shift, self.s2p)
+cdef class MovePatternInBounds:
+    cdef int extent
+    cdef MovePattern pattern
 
-    #def __getitem__(self, i):
-        #if i < self.io_slot_count:
-            #return self.io_pattern[i]
-        #else:
-            #return self.logic_pattern[i]
+    def __init__(self, int extent, int magnitude, int shift=0):
+        self.extent = extent
+        self.pattern = MovePattern(magnitude, shift)
 
-    #def __len__(self):
-        #return len(self.s2p)
+    def __getitem__(self, int i):
+        return self.get(i)
+
+    cdef inline int get(self, int i):
+        # We still need to use the offset-based position for computing the
+        # target position.
+        cdef int move = self.pattern.get(i)
+        cdef int target = i + move
+        if target < 0 or target >= self.extent:
+            # If the displacement targets a location that is outside the
+            # boundaries, set displacement to zero.
+            return 0
+        return move
+
+    def __len__(self):
+        return self.extent
+
+    property extent:
+        def __get__(self): return self.extent
+
+    property shift:
+        def __get__(self):
+            return self.pattern.shift
+        def __set__(self, value):
+            self.pattern.shift = value
+
+    property pattern:
+        def __get__(self): return self.pattern
+
+
+cdef class MovePatternInBounds2d:
+    cdef VPRAutoSlotKeyTo2dPosition s2p
+    cdef MovePattern2d pattern
+
+    def __cinit__(self, Extent2D magnitude, Extent2D shift,
+                  VPRAutoSlotKeyTo2dPosition slot_key_to_position):
+        self.s2p = slot_key_to_position
+        self.pattern = MovePattern2d(magnitude, shift, self.s2p.extent)
+
+    def __getitem__(self, i):
+        return self.get(i)
+
+    cdef inline int get(self, int i):
+        # Get zero-based position, since displacement patterns are indexed
+        # starting at zero.
+        cdef TwoD position0 = self.s2p.get0(i)
+
+        # We still need to use the offset-based position for computing the
+        # target position.
+        cdef TwoD position = self.s2p.get(i)
+        cdef TwoD move = TwoD(self.pattern.column.get(position0.x),
+                              self.pattern.row.get(position0.y))
+        cdef TwoD target = position + move
+        if not self.s2p.in_bounds(target):
+            # If the displacement targets a location that is outside the
+            # boundaries, set displacement to zero.
+            return 0
+        return move.x * self.s2p.extent.row + move.y
+
+    def __len__(self):
+        return len(self.pattern)
+
+
+cdef class VPRMovePattern:
+    cdef VPRAutoSlotKeyTo2dPosition s2p
+    cdef int io_slot_count
+    cdef MovePatternInBounds io_pattern
+    cdef MovePatternInBounds2d logic_pattern
+
+    def __init__(self, int io_magnitude, int io_shift,
+                 Extent2D logic_magnitude, Extent2D logic_shift,
+                 VPRAutoSlotKeyTo2dPosition slot_key_to_position):
+        self.s2p = slot_key_to_position
+        self.io_slot_count = self.s2p.slot_count.io
+        self.io_pattern = MovePatternInBounds(self.io_slot_count,
+                                              io_magnitude, io_shift)
+        self.logic_pattern = MovePatternInBounds2d(logic_magnitude,
+                                                   logic_shift, self.s2p)
+
+    def __getitem__(self, i):
+        return self.get(i)
+
+    cdef inline int get(self, int i):
+        if i < self.io_slot_count:
+            return self.io_pattern.get(i)
+        else:
+            return self.logic_pattern.get(i)
+
+    def __len__(self):
+        return len(self.s2p)
+
+    property io_pattern:
+        def __get__(self): return self.io_pattern
+
+    property logic_pattern:
+        def __get__(self): return self.logic_pattern
