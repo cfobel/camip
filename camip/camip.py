@@ -36,6 +36,7 @@ from scipy.stats import itemfreq
 import scipy.sparse as sparse
 
 from cyplace_experiments.data import open_netlists_h5f
+from .CAMIP import evaluate_moves
 
 
 try:
@@ -381,10 +382,10 @@ class CAMIP(object):
         self.block_slot_keys_prime = np.empty_like(self.block_slot_keys)
         self._sync_slot_block_keys_to_block_slot_keys()
 
-        self.p_x = np.empty(netlist.block_count)
-        self.p_y = np.empty(netlist.block_count)
-        self.p_x_prime = np.empty(netlist.block_count)
-        self.p_y_prime = np.empty(netlist.block_count)
+        self.p_x = np.empty(netlist.block_count, dtype=np.int32)
+        self.p_y = np.empty(netlist.block_count, dtype=np.int32)
+        self.p_x_prime = np.empty(netlist.block_count, dtype=np.int32)
+        self.p_y_prime = np.empty(netlist.block_count, dtype=np.int32)
 
         self.Y = netlist.C._with_data(np.empty_like(netlist.C.data,
                                                     dtype=np.float32),
@@ -493,23 +494,15 @@ class CAMIP(object):
 
     @profile
     def evaluate_moves(self):
-        for k, (i, j) in enumerate(itertools.izip(self.omega_prime.row,
-                                                  self.omega_prime.col)):
-            self.omega_prime.data[k] = 1.59 * (
-                np.sqrt(np.square(self.e_x[0, j] - self.p_x[i] +
-                                  self.p_x_prime[i]) - (self.e_x2[0, j] -
-                                                        self.p_x[i] *
-                                                        self.p_x[i] +
-                                                        self.p_x_prime[i] *
-                                                        self.p_x_prime[i]) *
-                        self.r_inv[0, j] + 1) +
-                np.sqrt(np.square(self.e_y[0, j] - self.p_y[i] +
-                                  self.p_y_prime[i]) - (self.e_y2[0, j] -
-                                                        self.p_y[i] *
-                                                        self.p_y[i] +
-                                                        self.p_y_prime[i] *
-                                                        self.p_y_prime[i]) *
-                        self.r_inv[0, j] + 1))
+        # __NB__ Use Cython function _(improves run-time performance by almost
+        # three orders of magnitude)_.
+        evaluate_moves(self.omega_prime.data, self.omega_prime.row,
+                       self.omega_prime.col,
+                       self.p_x, self.p_x_prime, self.e_x.A.ravel(),
+                       self.e_x2.A.ravel(),
+                       self.p_y, self.p_y_prime, self.e_y.A.ravel(),
+                       self.e_y2.A.ravel(),
+                       self.r_inv.A.ravel(), 1.59)
 
         self.n_c_prime = self.omega_prime.sum(axis=1)
         self.delta_n = self.n_c_prime - self.n_c
