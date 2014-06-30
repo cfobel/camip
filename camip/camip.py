@@ -38,6 +38,12 @@ import scipy.sparse as sparse
 from cyplace_experiments.data import open_netlists_h5f
 
 
+try:
+    profile
+except:
+    profile = lambda (f): f
+
+
 class SlotKeyTo2dPosition(object):
     def __init__(self, row_extent, offset=None):
         if offset is None:
@@ -353,7 +359,7 @@ class CAMIP(object):
         self.s2p = VPRAutoSlotKeyTo2dPosition(self.io_count, self.logic_count,
                                               2)
         self.slot_block_keys = np.empty(len(self.s2p), dtype=np.uint32)
-        self.slot_block_keys.fill(netlist.block_count)
+        self.slot_block_keys[:] = netlist.block_count
 
         # Fill IO slots.
         self.slot_block_keys[:self.io_count] = [i for i, t in
@@ -372,6 +378,7 @@ class CAMIP(object):
         # Create reverse-mapping, from each block-key to the permutation slot
         # the block occupies.
         self.block_slot_keys = np.empty(netlist.block_count, dtype=np.uint32)
+        self.block_slot_keys_prime = np.empty_like(self.block_slot_keys)
         self._sync_slot_block_keys_to_block_slot_keys()
 
         self.p_x = np.empty(netlist.block_count)
@@ -463,6 +470,7 @@ class CAMIP(object):
         self.n_c = self.omega.sum(axis=1)
         return self.theta
 
+    @profile
     def propose_moves(self, seed):
         netlist = self.netlist
         np.random.seed(seed)
@@ -480,8 +488,11 @@ class CAMIP(object):
         self.block_slot_keys_prime = np.fromiter((k + self.move_pattern[k]
                                                   for k in
                                                   self.block_slot_keys),
-                                                 dtype=np.int32)
+                                                 dtype=np.int32,
+                                                 count=len(self
+                                                           .block_slot_keys))
 
+    @profile
     def evaluate_moves(self):
         for k, (i, j) in enumerate(itertools.izip(self.omega_prime.row,
                                                   self.omega_prime.col)):
@@ -545,6 +556,7 @@ class CAMIP(object):
             self.block_slot_keys_prime, self.block_slot_keys)
         self._sync_block_slot_keys_to_slot_block_keys()
 
+    @profile
     def run_iteration(self, seed, temperature):
         self.propose_moves(seed)
         self.evaluate_moves()
