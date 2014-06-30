@@ -419,6 +419,12 @@ cdef class MovePatternInBounds:
     property extent:
         def __get__(self): return self.extent
 
+    property magnitude:
+        def __get__(self):
+            return self.pattern.magnitude
+        def __set__(self, value):
+            self.pattern.magnitude = value
+
     property shift:
         def __get__(self):
             return self.pattern.shift
@@ -460,6 +466,22 @@ cdef class MovePatternInBounds2d:
 
     def __len__(self):
         return len(self.pattern)
+
+    property pattern:
+        def __get__(self):
+            return self.pattern
+
+    property magnitude:
+        def __get__(self):
+            return self.pattern.magnitude
+        def __set__(self, value):
+            self.pattern.magnitude = value
+
+    property shift:
+        def __get__(self):
+            return self.pattern.shift
+        def __set__(self, value):
+            self.pattern.shift = value
 
 
 cdef class VPRMovePattern:

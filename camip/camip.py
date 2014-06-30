@@ -256,9 +256,11 @@ class CAMIP(object):
         return self.theta
 
     @profile
-    def propose_moves(self, seed):
+    def propose_moves(self, seed, max_io_move=None, max_logic_move=None):
         np.random.seed(seed)
-        self.move_pattern = random_vpr_pattern(self.s2p)
+        self.move_pattern = random_vpr_pattern(self.s2p,
+                                               max_io_move=max_io_move,
+                                               max_logic_move=max_logic_move)
         slot_moves(self.block_slot_moves, self.block_slot_keys,
                    self.move_pattern)
         self.block_slot_keys_prime[:] = (self.block_slot_keys +
@@ -331,8 +333,10 @@ class CAMIP(object):
         self._sync_block_slot_keys_to_slot_block_keys()
 
     @profile
-    def run_iteration(self, seed, temperature):
-        self.propose_moves(seed)
+    def run_iteration(self, seed, temperature, max_io_move=None,
+                      max_logic_move=None):
+        self.propose_moves(seed, max_io_move=max_io_move,
+                           max_logic_move=max_logic_move)
         self.evaluate_moves()
         moved_count, rejected_move_block_keys = self.assess_groups(temperature)
         self.apply_groups(rejected_move_block_keys)

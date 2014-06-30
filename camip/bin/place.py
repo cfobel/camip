@@ -17,11 +17,14 @@ def place(net_file_namebase):
 
     placer.evaluate_placement()
 
-    for i in xrange(10):
-        placer.run_iteration(np.random.randint(10000), 1)
+    total_moves = np.zeros(100, dtype=int)
+    for i in xrange(100):
+        non_zero_moves, rejected = placer.run_iteration(np.random
+                                                        .randint(10001), 1)
+        total_moves[i] = non_zero_moves
 
-    return placer
+    return placer, total_moves
 
 
 if __name__ == '__main__':
-    placer = place(sys.argv[1])
+    placer, total_moves = place(sys.argv[1])
