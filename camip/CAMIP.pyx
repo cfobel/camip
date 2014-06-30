@@ -1,3 +1,4 @@
+#distutils: language=c++
 #cython: embedsignature=True, boundscheck=False
 from libc.stdint cimport uint32_t, int32_t
 cimport cython
@@ -8,11 +9,32 @@ cdef extern from "math.h":
     double ceil(double x)
 
 
+cdef extern from "math.h":
+    double c_get_std_dev "get_std_dev" (int n, double sum_x_squared, double av_x)
+
+
+cdef extern from "schedule.hpp":
+    cppclass AnnealSchedule "anneal::AnnealSchedule<float>":
+        float start_rlim_
+        float rlim_
+        float start_temperature_
+        float temperature_
+        float success_ratio_
+
+        AnnealSchedule(float start_rlim, float start_temperature)
+        int clamp_rlim(float max_rlim)
+        int get_temperature_stage() const
+        void init(float start_rlim, float start_temperature)
+        void update_rlim()
+        void update_state(float success_ratio)
+        void update_temperature()
+
+
 cdef inline evaluate_move(int i, int j, int32_t[:] p, int32_t[:] p_prime,
                           float[:] e, float[:] e_2, float[:] r_inv):
     cdef float new_e = (e[j] - p[i] + p_prime[i])
-    cdef float result = sqrt(new_e * new_e - (e_2[j] - p[i] * p[i] + p_prime[i]
-                                              * p_prime[i]) * r_inv[j] + 1)
+    cdef float new_e_2 = (e_2[j] - p[i] * p[i] + p_prime[i] * p_prime[i])
+    cdef float result = sqrt(new_e_2 - new_e * new_e * r_inv[j] + 1)
     return result
 
 
@@ -519,6 +541,64 @@ cdef class VPRMovePattern:
         def __get__(self): return self.logic_pattern
 
 
+cdef class cAnnealSchedule:
+    cdef AnnealSchedule *data
+
+    def __cinit__(self, float start_rlim=0, float start_temperature=0):
+        self.data = new AnnealSchedule(start_rlim, start_temperature)
+
+    def __dealloc__(self):
+        del self.data
+
+    property start_rlim:
+        def __get__(self):
+            return self.data.start_rlim_
+        def __set__(self, value):
+            self.data.start_rlim_ = value
+
+    property rlim:
+        def __get__(self):
+            return self.data.rlim_
+        def __set__(self, value):
+            self.data.rlim_ = value
+
+    property start_temperature:
+        def __get__(self):
+            return self.data.start_temperature_
+        def __set__(self, value):
+            self.data.start_temperature_ = value
+
+    property temperature:
+        def __get__(self):
+            return self.data.temperature_
+        def __set__(self, value):
+            self.data.temperature_ = value
+
+    property success_ratio:
+        def __get__(self):
+            return self.data.success_ratio_
+        def __set__(self, value):
+            self.data.success_ratio_ = value
+
+    def clamp_rlim(self, max_rlim):
+        return self.data.clamp_rlim(max_rlim)
+
+    def get_temperature_stage(self):
+        return self.data.get_temperature_stage()
+
+    def init(self, start_rlim, start_temperature):
+        self.data.init(start_rlim, start_temperature)
+
+    def update_rlim(self):
+        self.data.update_rlim()
+
+    def update_state(self, success_ratio):
+        self.data.update_state(success_ratio)
+
+    def update_temperature(self):
+        self.data.update_temperature()
+
+
 cpdef slot_moves(int32_t[:] output, uint32_t[:] slot_keys,
                  VPRMovePattern move_pattern):
     cdef int i
@@ -538,3 +618,7 @@ cpdef extract_positions(int32_t[:] p_x, int32_t[:] p_y, uint32_t[:] slot_keys,
         position = s2p.get(slot_keys[i])
         p_x[i] = position.x
         p_y[i] = position.y
+
+
+def get_std_dev(int n, double sum_x_squared, double av_x):
+    return c_get_std_dev(n, sum_x_squared, av_x)

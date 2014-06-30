@@ -36,12 +36,72 @@ import scipy.sparse as sparse
 
 from cyplace_experiments.data import open_netlists_h5f
 from .CAMIP import (evaluate_moves, VPRMovePattern, VPRAutoSlotKeyTo2dPosition,
-                    Extent2D, slot_moves, extract_positions)
+                    Extent2D, slot_moves, extract_positions, cAnnealSchedule,
+                    get_std_dev)
 
 try:
     profile
 except:
     profile = lambda (f): f
+
+
+class VPRSchedule(object):
+    def __init__(self, s2p, inner_num, netlist, placer=None):
+        self.s2p = s2p
+        self.inner_num = inner_num
+        self.moves_per_temperature = inner_num * pow(netlist.block_count,
+                                                     1.33333)
+        rlim = min(self.s2p.extent.row, self.s2p.extent.column)
+        if placer is not None:
+            start_temperature = self.get_starting_temperature(placer)
+        else:
+            start_temperature = 0.
+        self.anneal_schedule = cAnnealSchedule(rlim, start_temperature)
+
+    def get_starting_temperature(self, placer, move_count=None):
+        deltas_sum = 0.
+        deltas_squared_sum = 0.
+        total_moves = 0
+
+        if move_count is None:
+            move_count = placer.netlist.block_count
+
+        while total_moves < move_count:
+            placer.propose_moves(np.random.randint(100000))
+            placer.evaluate_moves()
+            non_zero_moves, rejected = placer.assess_groups(1000000)
+            total_moves += non_zero_moves
+            deltas = np.abs(placer.n_c_prime.A.ravel() - placer.n_c.A.ravel())
+            deltas_sum += deltas.sum()
+            deltas_squared_sum += (deltas * deltas).sum()
+        deltas_stddev = get_std_dev(total_moves, deltas_squared_sum, deltas_sum
+                                    / total_moves)
+        return 20 * deltas_stddev
+
+    def outer_iteration(self, placer):
+        total_moves = 0
+        rejected_moves = 0
+
+        while total_moves < self.moves_per_temperature:
+            max_logic_move = max(self.anneal_schedule.rlim, 1)
+            non_zero_moves, rejected = placer.run_iteration(
+                np.random.randint(1000000), self.anneal_schedule.temperature,
+                max_logic_move=Extent2D(max_logic_move, max_logic_move))
+            total_moves += non_zero_moves
+            rejected_moves += len(rejected)
+        success_ratio = (total_moves - rejected_moves) / float(total_moves)
+        self.anneal_schedule.update_state(success_ratio)
+        return total_moves, rejected_moves
+
+    def run(self, placer):
+        costs = []
+        while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
+               placer.netlist.C.shape[1]):
+            costs += [placer.theta]
+            total_moves, rejected_moves = self.outer_iteration(placer)
+            print (self.anneal_schedule.temperature, self.anneal_schedule.rlim,
+                   self.anneal_schedule.success_ratio)
+        return costs
 
 
 class MatrixNetlist(object):
@@ -196,8 +256,8 @@ class CAMIP(object):
         The shuffle is aware of IO and logic slots in the placement, and will
         keep IO and logic within the corresponding areas of the permutation.
         '''
-        np.random.shuffle(self.slot_block_keys[:p.s2p.slot_count.io])
-        np.random.shuffle(self.slot_block_keys[p.s2p.slot_count.io:])
+        np.random.shuffle(self.slot_block_keys[:self.s2p.slot_count.io])
+        np.random.shuffle(self.slot_block_keys[self.s2p.slot_count.io:])
         self._sync_slot_block_keys_to_block_slot_keys()
 
     def _sync_block_slot_keys_to_slot_block_keys(self):
@@ -238,16 +298,16 @@ class CAMIP(object):
         self.e_x2 = self.X.multiply(self.X).sum(axis=0)
         self.e_y = self.Y.sum(axis=0)
         self.e_y2 = self.Y.multiply(self.Y).sum(axis=0)
-        self.e_c = 1.59 * (np.sqrt(np.square(self.e_x) - self.e_x2.A *
+        self.e_c = 1.59 * (np.sqrt(self.e_x2.A - np.square(self.e_x.A) *
                                    self.r_inv.A + 1) +
-                           np.sqrt(np.square(self.e_y) - self.e_y2.A *
+                           np.sqrt(self.e_y2.A - np.square(self.e_y.A) *
                                    self.r_inv.A + 1))
 
         # `theta`: $\theta =$ total placement cost
         self.theta = self.e_c.sum()
 
         # `omega`: $\Omega \in \mathbb{M}_{mn}$, $\omega_{ij} = e_cj$.
-        self.omega.data[:] = map(self.e_c.A.ravel().__getitem__,
+        self.omega.data[:] = map(self.e_c.ravel().__getitem__,
                                  self.netlist.C.col)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node

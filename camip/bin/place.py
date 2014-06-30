@@ -1,7 +1,6 @@
 import sys
 
-import numpy as np
-from camip import MatrixNetlist, CAMIP
+from camip import MatrixNetlist, CAMIP, VPRSchedule
 import pandas as pd
 from cyplace_experiments.data import open_netlists_h5f
 
@@ -14,17 +13,19 @@ def place(net_file_namebase):
     netlist = MatrixNetlist(connections,
                             block_type_labels[netlist_group.block_types[:]])
     placer = CAMIP(netlist)
-
-    placer.evaluate_placement()
-
-    total_moves = np.zeros(100, dtype=int)
-    for i in xrange(100):
-        non_zero_moves, rejected = placer.run_iteration(np.random
-                                                        .randint(10001), 1)
-        total_moves[i] = non_zero_moves
-
-    return placer, total_moves
+    placer.shuffle_placement()
+    print placer.evaluate_placement()
+    schedule = VPRSchedule(placer.s2p, 1, placer.netlist, placer)
+    print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature
+    costs = schedule.run(placer)
+    return placer, costs
 
 
 if __name__ == '__main__':
-    placer, total_moves = place(sys.argv[1])
+    #import matplotlib.pyplot as plt
+
+    placer, costs = place(sys.argv[1])
+    #fig = plt.figure()
+    #ax = fig.add_subplot(111, title=sys.argv[1])
+    #ax.plot(costs)
+    #plt.show(block=True)
