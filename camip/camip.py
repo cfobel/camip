@@ -37,7 +37,8 @@ import scipy.sparse as sparse
 from cyplace_experiments.data import open_netlists_h5f
 from .CAMIP import (evaluate_moves, VPRMovePattern, VPRAutoSlotKeyTo2dPosition,
                     Extent2D, slot_moves, extract_positions, cAnnealSchedule,
-                    get_std_dev)
+                    get_std_dev, sort_netlist_keys, sum_float_by_key,
+                    copy_e_c_to_omega, sum_xy_vectors)
 
 try:
     profile
@@ -71,7 +72,7 @@ class VPRSchedule(object):
             placer.evaluate_moves()
             non_zero_moves, rejected = placer.assess_groups(1000000)
             total_moves += non_zero_moves
-            deltas = np.abs(placer.n_c_prime.A.ravel() - placer.n_c.A.ravel())
+            deltas = np.abs(placer.n_c_prime - placer.n_c).A.ravel()
             deltas_sum += deltas.sum()
             deltas_squared_sum += (deltas * deltas).sum()
         deltas_stddev = get_std_dev(total_moves, deltas_squared_sum, deltas_sum
@@ -198,13 +199,14 @@ def random_vpr_pattern(vpr_s2p, max_logic_move=None, max_io_move=None):
 
 
 class CAMIP(object):
-    def __init__(self, netlist):
+    def __init__(self, netlist, io_capacity=2):
         self.netlist = netlist
+        self.io_capacity = io_capacity
         self.io_count = (netlist.block_type_counts['.input'] +
                          netlist.block_type_counts['.output'])
         self.logic_count = netlist.block_type_counts['.clb']
         self.s2p = VPRAutoSlotKeyTo2dPosition(self.io_count, self.logic_count,
-                                              2)
+                                              io_capacity)
         self.slot_block_keys = np.empty(len(self.s2p), dtype=np.uint32)
         self.slot_block_keys[:] = netlist.block_count
 
@@ -240,14 +242,36 @@ class CAMIP(object):
         self.X = netlist.C._with_data(np.empty_like(netlist.C.data,
                                                     dtype=np.float32),
                                       copy=False)
+
+        self._e_x = np.empty(self.X.shape[1], dtype=np.float32)
+        self._e_x2 = np.empty_like(self._e_x)
+        self._e_y = np.empty_like(self._e_x)
+        self._e_y2 = np.empty_like(self._e_x)
+        self._e_c = np.empty_like(self._e_x)
+
         self.omega = netlist.C._with_data(np.empty_like(netlist.C.data,
                                                         dtype=np.float32),
                                           copy=False)
-        self.omega_prime = netlist.C._with_data(np.empty_like(netlist.C.data,
-                                                              dtype=np
-                                                              .float32),
-                                                copy=False)
-        self.r_inv = np.reciprocal(netlist.r.astype(np.float32))
+        self.omega_prime = netlist.C._with_data(np.ones_like(netlist.C.data,
+                                                             dtype=np
+                                                             .float32),
+                                                copy=True)
+        self._block_keys = np.empty_like(netlist.C.row)
+        self.net_count = sum_float_by_key(self.omega_prime.col,
+                                          self.omega_prime.data,
+                                          self._block_keys,
+                                          self.omega_prime.data)
+        sort_netlist_keys(self.omega_prime.row, self.omega_prime.col)
+
+        self.e_x = self._e_x[:self.net_count]
+        self.e_x2 = self._e_x2[:self.net_count]
+        self.e_y = self._e_y[:self.net_count]
+        self.e_y2 = self._e_y2[:self.net_count]
+        self.e_c = self._e_c[:self.net_count]
+
+        self.n_c_prime = self.omega_prime.data[:netlist.block_count,
+                                               np.newaxis]
+        self.r_inv = np.reciprocal(netlist.r.A.ravel().astype(np.float32))
 
     def shuffle_placement(self):
         '''
@@ -279,6 +303,7 @@ class CAMIP(object):
         self.block_slot_keys[self.slot_block_keys[occupied]] = occupied[0]
         del occupied
 
+    @profile
     def evaluate_placement(self):
         '''
         Compute the cost of:
@@ -294,21 +319,21 @@ class CAMIP(object):
         self.Y.data[:] = self.p_y[self.Y.row]
 
         # Star+ vectors
-        self.e_x = self.X.sum(axis=0)
-        self.e_x2 = self.X.multiply(self.X).sum(axis=0)
-        self.e_y = self.Y.sum(axis=0)
-        self.e_y2 = self.Y.multiply(self.Y).sum(axis=0)
-        self.e_c = 1.59 * (np.sqrt(self.e_x2.A - np.square(self.e_x.A) *
-                                   self.r_inv.A + 1) +
-                           np.sqrt(self.e_y2.A - np.square(self.e_y.A) *
-                                   self.r_inv.A + 1))
+        sum_xy_vectors(self.X.col, self.X.data, self.Y.data, self._e_x,
+                       self._e_x2, self._e_y, self._e_y2, self._block_keys)
+        self.e_c[:] = 1.59 * (np.sqrt(self.e_x2 - np.square(self.e_x) *
+                                      self.r_inv + 1) +
+                              np.sqrt(self.e_y2 - np.square(self.e_y) *
+                                      self.r_inv + 1))
 
         # `theta`: $\theta =$ total placement cost
         self.theta = self.e_c.sum()
 
         # `omega`: $\Omega \in \mathbb{M}_{mn}$, $\omega_{ij} = e_cj$.
-        self.omega.data[:] = map(self.e_c.ravel().__getitem__,
-                                 self.netlist.C.col)
+        copy_e_c_to_omega(self.e_c.ravel(), self.netlist.C.col,
+                          self.omega.data)
+        #self.omega.data[:] = map(self.e_c.ravel().__getitem__,
+                                 #self.netlist.C.col)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
@@ -337,14 +362,14 @@ class CAMIP(object):
         # three orders of magnitude)_.
         evaluate_moves(self.omega_prime.data, self.omega_prime.row,
                        self.omega_prime.col,
-                       self.p_x, self.p_x_prime, self.e_x.A.ravel(),
-                       self.e_x2.A.ravel(),
-                       self.p_y, self.p_y_prime, self.e_y.A.ravel(),
-                       self.e_y2.A.ravel(),
-                       self.r_inv.A.ravel(), 1.59)
+                       self.p_x, self.p_x_prime, self.e_x, self.e_x2,
+                       self.p_y, self.p_y_prime, self.e_y, self.e_y2,
+                       self.r_inv, 1.59)
 
-        self.n_c_prime = self.omega_prime.sum(axis=1)
+        sum_float_by_key(self.omega_prime.row, self.omega_prime.data,
+                         self._block_keys, self.omega_prime.data)
         self.delta_n = self.n_c_prime - self.n_c
+        pass
 
     def assess_groups(self, temperature):
         total_slot_count = len(self.s2p)

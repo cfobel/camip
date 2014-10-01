@@ -83,6 +83,8 @@ public:
         rlim_ = max(rlim_, max_rlim);
         return rlim_;
     }
+
+    virtual ~AnnealSchedule() {}
 };
 
 } // namespace anneal

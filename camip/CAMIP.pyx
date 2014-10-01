@@ -1,6 +1,19 @@
 #distutils: language=c++
 #cython: embedsignature=True, boundscheck=False
+from cython.operator cimport dereference as deref
 from libc.stdint cimport uint32_t, int32_t
+import numpy as np
+cimport numpy as np
+from cythrust.thrust.sort cimport sort_by_key
+from cythrust.thrust.reduce cimport accumulate_by_key
+from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
+from cythrust.thrust.copy cimport copy_n
+from cythrust.thrust.transform cimport transform
+from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
+from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
+from cythrust.thrust.tuple cimport make_tuple5, make_tuple2
+from cythrust.thrust.functional cimport (unpack_binary_args, square,
+                                         unpack_quinary_args, plus)
 cimport cython
 
 cdef extern from "math.h":
@@ -11,6 +24,11 @@ cdef extern from "math.h":
 
 cdef extern from "math.h":
     double c_get_std_dev "get_std_dev" (int n, double sum_x_squared, double av_x)
+
+
+cdef extern from "CAMIP.hpp":
+    cdef cppclass evaluate_move:
+        evaluate_move(float)
 
 
 cdef extern from "schedule.hpp":
@@ -30,12 +48,54 @@ cdef extern from "schedule.hpp":
         void update_temperature()
 
 
-cdef inline evaluate_move(int i, int j, int32_t[:] p, int32_t[:] p_prime,
-                          float[:] e, float[:] e_2, float[:] r_inv):
-    cdef float new_e = (e[j] - p[i] + p_prime[i])
-    cdef float new_e_2 = (e_2[j] - p[i] * p[i] + p_prime[i] * p_prime[i])
-    cdef float result = sqrt(new_e_2 - new_e * new_e * r_inv[j] + 1)
-    return result
+cpdef sum_xy_vectors(int32_t[:] net_keys, float[:] X, float[:] Y,
+                     float[:] e_x, float[:] e_x2,
+                     float[:] e_y, float[:] e_y2,
+                     int32_t[:] reduced_keys):
+    cdef size_t count = net_keys.size
+    cdef square[float] square_f
+
+    accumulate_by_key(
+        &net_keys[0], &net_keys[0] + count,
+        &X[0], &reduced_keys[0], &e_x[0])
+    accumulate_by_key(
+        &net_keys[0], &net_keys[0] + count,
+        make_transform_iterator(&X[0], square_f), &reduced_keys[0], &e_x2[0])
+    accumulate_by_key(
+        &net_keys[0], &net_keys[0] + count,
+        &Y[0], &reduced_keys[0], &e_y[0])
+    accumulate_by_key(
+        &net_keys[0], &net_keys[0] + count,
+        make_transform_iterator(&Y[0], square_f), &reduced_keys[0], &e_y2[0])
+
+
+cpdef copy_e_c_to_omega(float[:] e_c, int32_t[:] block_keys, float[:] omega):
+    copy_n(
+        make_permutation_iterator(&e_c[0], &block_keys[0]),
+        <size_t>block_keys.size, &omega[0])
+
+
+cpdef sort_float_coo(int32_t[:] keys1, int32_t[:] keys2, float[:] values):
+    sort_by_key(&keys1[0], &keys1[0] + <size_t>keys1.size,
+                make_zip_iterator(make_tuple2(&keys2[0], &values[0])))
+
+
+cpdef sort_netlist_keys(int32_t[:] keys1, int32_t[:] keys2):
+    sort_by_key(&keys1[0], &keys1[0] + <size_t>keys1.size, &keys2[0])
+
+
+cpdef sum_float_by_key(np.ndarray[np.int32_t,ndim=1] keys,
+                       np.ndarray[np.float32_t,ndim=1] values,
+                       np.ndarray[np.int32_t,ndim=1] reduced_keys,
+                       np.ndarray[np.float32_t,ndim=1] reduced_values):
+    cdef size_t count = (<int32_t*>accumulate_by_key(<int32_t *>keys.data,
+                                                     <int32_t *>keys.data +
+                                                     <size_t>keys.size,
+                                                     <float *>values.data,
+                                                     <int32_t *>reduced_keys.data,
+                                                     <float *>reduced_values.data).first -
+                         <int32_t*>reduced_keys.data)
+    return count
 
 
 cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
@@ -44,18 +104,49 @@ cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
                      int32_t[:] p_y, int32_t[:] p_y_prime,
                      float[:] e_y, float[:] e_y_2,
                      float[:] r_inv, float beta):
-    cdef int count = len(output)
+    cdef size_t count = len(output)
     cdef int k
     cdef int i
     cdef int j
 
-    for k in xrange(count):
-        i = row[k]
-        j = col[k]
-        output[k] = beta * (evaluate_move(i, j, p_x, p_x_prime, e_x, e_x_2,
-                                          r_inv) +
-                            evaluate_move(i, j, p_y, p_y_prime, e_y, e_y_2,
-                                          r_inv))
+    cdef plus[float] plus2
+    cdef unpack_binary_args[plus[float]] *plus2_tuple = \
+        new unpack_binary_args[plus[float]](plus2)
+    cdef evaluate_move *eval_func = new evaluate_move(beta)
+    cdef unpack_quinary_args[evaluate_move] *eval_func_tuple = \
+        new unpack_quinary_args[evaluate_move](deref(eval_func))
+
+    copy_n(
+        make_transform_iterator(
+            make_zip_iterator(
+                make_tuple2(
+                    make_transform_iterator(
+                        make_zip_iterator(
+                            make_tuple5(
+                                make_permutation_iterator(&e_y[0], &col[0]),
+                                make_permutation_iterator(&e_y_2[0], &col[0]),
+                                make_permutation_iterator(&p_y[0], &row[0]),
+                                make_permutation_iterator(&p_y_prime[0], &row[0]),
+                                make_permutation_iterator(&r_inv[0], &col[0]))),
+                        deref(eval_func_tuple)),
+                    make_transform_iterator(
+                        make_zip_iterator(
+                            make_tuple5(
+                                make_permutation_iterator(&e_x[0], &col[0]),
+                                make_permutation_iterator(&e_x_2[0], &col[0]),
+                                make_permutation_iterator(&p_x[0], &row[0]),
+                                make_permutation_iterator(&p_x_prime[0], &row[0]),
+                                make_permutation_iterator(&r_inv[0], &col[0]))),
+                        deref(eval_func_tuple)))), deref(plus2_tuple)), count,
+        &output[0])
+
+    # for k in xrange(count):
+    #     i = row[k]
+    #     j = col[k]
+    #     output[k] = beta * (evaluate_move(i, j, p_x, p_x_prime, e_x, e_x_2,
+    #                                       r_inv) +
+    #                         evaluate_move(i, j, p_y, p_y_prime, e_y, e_y_2,
+    #                                       r_inv))
 
 
 cdef class BlockTypeCount:
