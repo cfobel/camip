@@ -2,8 +2,10 @@
 #cython: embedsignature=True, boundscheck=False
 from cython.operator cimport dereference as deref
 from libc.stdint cimport uint32_t, int32_t
+from libc.math cimport fmin
 import numpy as np
 cimport numpy as np
+from cythrust.thrust.pair cimport pair, make_pair
 from cythrust.thrust.sort cimport sort_by_key
 from cythrust.thrust.reduce cimport accumulate_by_key
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
@@ -16,22 +18,199 @@ from cythrust.thrust.functional cimport (unpack_binary_args, square,
                                          unpack_quinary_args, plus)
 cimport cython
 
-cdef extern from "math.h":
+cdef extern from "math.h" nogil:
     double sqrt(double x)
     double exp(double x)
     double ceil(double x)
 
 
-cdef extern from "math.h":
+cdef extern from "math.h" nogil:
     double c_get_std_dev "get_std_dev" (int n, double sum_x_squared, double av_x)
 
 
-cdef extern from "CAMIP.hpp":
+cdef extern from "CAMIP.hpp" nogil:
     cdef cppclass evaluate_move:
         evaluate_move(float)
 
+    cdef cppclass slot_move[T]:
+        slot_move(T)
 
-cdef extern from "schedule.hpp":
+    cdef cppclass IOSegmentStarts[T]:
+        IOSegmentStarts(T)
+
+    cdef cppclass BlockTypeCount:
+        int io
+        int logic
+
+    cdef cppclass VPRIOSlotKeyTo2dPosition[T]:
+        VPRIOSlotKeyTo2dPosition(T)
+
+    cdef cppclass SlotKeyTo2dPosition[T]:
+        SlotKeyTo2dPosition(T)
+
+    cdef cppclass MovePattern:
+        MovePattern(int, int)
+
+    cdef cppclass MovePatternInBounds:
+        MovePatternInBounds(int extent, int magnitude, int shift)
+
+    cdef cppclass MovePatternInBounds2d[T]:
+        MovePatternInBounds2d(T magnitude, T shift,
+                              VPRAutoSlotKeyTo2dPosition[T]
+                              slot_key_to_position)
+
+    cdef cppclass cVPRAutoSlotKeyTo2dPosition 'VPRAutoSlotKeyTo2dPosition' [T]:
+        int io_count
+        int logic_count
+        int io_capacity
+        T extent
+        VPRIOSlotKeyTo2dPosition[T] io_s2p
+        SlotKeyTo2dPosition[T] logic_s2p
+        BlockTypeCount slot_count
+
+        cVPRAutoSlotKeyTo2dPosition(int io_count, int logic_count,
+                                    int io_capacity)
+        T operator() (int)
+
+    cdef cppclass PatternParams:
+        int32_t magnitude
+        int32_t shift
+
+    cdef cppclass PatternParams2D[T]:
+        PatternParams2D()
+        T magnitude
+        T shift
+
+    cdef cppclass cVPRMovePattern 'VPRMovePattern' [T]:
+        cVPRAutoSlotKeyTo2dPosition[T] s2p
+        int io_slot_count
+        MovePatternInBounds io_pattern
+        MovePatternInBounds2d[T] logic_pattern
+        int32_t operator() (int)
+        size_t io_slot_count()
+        size_t logic_slot_count()
+        size_t total_slot_count()
+
+        cVPRMovePattern(int io_magnitude, int io_shift, T logic_magnitude,
+                        T logic_shift,
+                        cVPRAutoSlotKeyTo2dPosition[T] slot_key_to_position)
+
+
+cdef class VPRMovePattern:
+    '''
+    def __cinit__(int io_magnitude, int io_shift, logic_magnitude,
+                  logic_shift,
+                  VPRAutoSlotKeyTo2dPosition slot_key_to_position)
+    '''
+    cdef cVPRMovePattern[pair[int32_t, int32_t]] *_data
+
+    def __cinit__(self, int io_magnitude, int io_shift, logic_magnitude,
+                  logic_shift,
+                  VPRAutoSlotKeyTo2dPosition slot_key_to_position):
+        cdef pair[int32_t, int32_t] _logic_magnitude
+        cdef pair[int32_t, int32_t] _logic_shift
+
+        _logic_magnitude = make_pair(<int32_t>logic_magnitude[0],
+                                     <int32_t>logic_magnitude[1])
+        _logic_shift = make_pair(<int32_t>logic_shift[0],
+                                 <int32_t>logic_shift[1])
+        cdef cVPRAutoSlotKeyTo2dPosition[pair[int32_t, int32_t]] *t = \
+            (<VPRAutoSlotKeyTo2dPosition>slot_key_to_position)._data
+
+        self._data = new cVPRMovePattern[pair[int32_t, int32_t]](
+            io_magnitude, io_shift, _logic_magnitude, _logic_shift, deref(t))
+
+    def __call__(self, int k):
+        return self[k]
+
+    def __getitem__(self, int k):
+        cdef int32_t result
+        result = deref(self._data)(k)
+        return result
+
+    def __dealloc__(self):
+        del self._data
+
+    property io_slot_count:
+        def __get__(self):
+            return self._data.io_slot_count()
+
+    property logic_slot_count:
+        def __get__(self):
+            return self._data.logic_slot_count()
+
+    property total_slot_count:
+        def __get__(self):
+            return self._data.total_slot_count()
+
+
+cdef class VPRAutoSlotKeyTo2dPosition:
+    '''
+    def __cinit__(self, int io_count, int logic_count, int io_capacity)
+    '''
+    cdef cVPRAutoSlotKeyTo2dPosition[pair[int32_t, int32_t]] *_data
+
+    def __cinit__(self, int io_count, int logic_count, int io_capacity):
+        self._data = new cVPRAutoSlotKeyTo2dPosition[pair[int32_t, int32_t]](io_count, logic_count, io_capacity)
+
+    def __call__(self, int k):
+        return self[k]
+
+    def __getitem__(self, int k):
+        cdef pair[int32_t, int32_t] result
+        result = deref(self._data)(k)
+        return (<int32_t>result.first, <int32_t>result.second)
+
+    def __dealloc__(self):
+        del self._data
+
+    property io_count:
+        def __get__(self):
+            return self._data.io_count
+
+        def __set__(self, value):
+            self._data.io_count = value
+
+    property logic_count:
+        def __get__(self):
+            return self._data.logic_count
+
+        def __set__(self, value):
+            self._data.logic_count = value
+
+    property io_capacity:
+        def __get__(self):
+            return self._data.io_capacity
+
+        def __set__(self, value):
+            self._data.io_capacity = value
+
+    property extent:
+        def __get__(self):
+            return (<int32_t>self._data.extent.first, <int32_t>self._data.extent.second)
+
+        def __set__(self, value):
+            assert(len(value) == 2)
+            cdef pair[int32_t, int32_t] result
+            cdef int32_t first = int(value[0])
+            cdef int32_t second = int(value[2])
+            result = make_pair(first, second)
+            self._data.extent = result
+
+    property io_slot_count:
+        def __get__(self):
+            return self._data.slot_count.io
+
+    property logic_slot_count:
+        def __get__(self):
+            return self._data.slot_count.logic
+
+    property total_slot_count:
+        def __get__(self):
+            return self._data.slot_count.io + self._data.slot_count.logic
+
+
+cdef extern from "schedule.hpp" nogil:
     cppclass AnnealSchedule "anneal::AnnealSchedule<float>":
         float start_rlim_
         float rlim_
@@ -149,489 +328,6 @@ cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
     #                                       r_inv))
 
 
-cdef class BlockTypeCount:
-    cdef int io
-    cdef int logic
-
-    def __cinit__(self, int io=0, int logic=0):
-        self.io = io
-        self.logic = logic
-
-    def __add__(self, other):
-        return (self.io + other.io, self.logic + other.logic)
-
-    def __sub__(self, other):
-        return (self.io - other.io, self.logic - other.logic)
-
-    property io:
-        def __get__(self):
-            return self.io
-
-        def __set__(self, value):
-            self.io = value
-
-    property logic:
-        def __get__(self):
-            return self.logic
-
-        def __set__(self, value):
-            self.logic = value
-
-
-cdef class IOSegmentStarts:
-    cdef int bottom
-    cdef int right
-    cdef int top
-    cdef int left
-
-    def __cinit__(self, Extent2D io_count):
-        self.bottom = 0
-        self.right = io_count.row
-        self.top = self.right + io_count.column
-        self.left = self.top + io_count.row
-
-    property bottom:
-        def __get__(self):
-            return self.bottom
-
-    property right:
-        def __get__(self):
-            return self.right
-
-    property top:
-        def __get__(self):
-            return self.top
-
-    property left:
-        def __get__(self):
-            return self.left
-
-
-cdef class Extent2D:
-    cdef int row
-    cdef int column
-
-    def __cinit__(self, int row=0, int column=0):
-        self.row = row
-        self.column = column
-
-    def __add__(self, other):
-        return (self.row + other.row, self.column + other.column)
-
-    property row:
-        def __get__(self):
-            return self.row
-
-        def __set__(self, value):
-            self.row = value
-
-    property column:
-        def __get__(self):
-            return self.column
-
-        def __set__(self, value):
-            self.column = value
-
-
-cdef class TwoD:
-    cdef int x
-    cdef int y
-
-    def __cinit__(self, int x=0, int y=0):
-        self.x = x
-        self.y = y
-
-    def __add__(self, other):
-        return TwoD(self.x + other.x, self.y + other.y)
-
-    def __sub__(self, other):
-        return TwoD(self.x - other.x, self.y - other.y)
-
-    property x:
-        def __get__(self):
-            return self.x
-
-        def __set__(self, value):
-            self.x = value
-
-    property y:
-        def __get__(self):
-            return self.y
-
-        def __set__(self, value):
-            self.y = value
-
-
-cdef class SlotKeyTo2dPosition:
-    cdef int row_extent
-    cdef TwoD offset
-
-    def __cinit__(self, int row_extent, TwoD offset=None):
-        if offset is None:
-            self.offset = TwoD(0, 0)
-        else:
-            self.offset = offset
-        self.row_extent = row_extent
-
-    def __getitem__(self, k):
-        return self.get(k)
-
-    cdef get(self, int k):
-        cdef TwoD p = TwoD(k // self.row_extent, k % self.row_extent)
-        return p + self.offset
-
-    property row_extent:
-        def __get__(self):
-            return self.row_extent
-
-    property offset:
-        def __get__(self):
-            return self.offset
-
-
-cdef class VPRIOSlotKeyTo2dPosition:
-    cdef Extent2D extent
-    cdef int io_capacity
-    cdef IOSegmentStarts segment_start
-    cdef int size
-
-    def __cinit__(self, Extent2D extent, int io_capacity):
-        self.extent = extent
-        self.io_capacity = io_capacity
-
-        cdef Extent2D io_count = Extent2D(self.extent.row * self.io_capacity,
-                                          self.extent.column *
-                                          self.io_capacity)
-        self.segment_start = IOSegmentStarts(io_count)
-        self.size = 2 * (io_count.column + io_count.row)
-
-    property extent:
-        def __get__(self):
-            return self.extent
-
-    property io_capacity:
-        def __get__(self):
-            return self.io_capacity
-
-    property segment_start:
-        def __get__(self):
-            return self.segment_start
-
-    def __len__(self):
-        return self.size
-
-    def __getitem__(self, k):
-        return self.get(k)
-
-    cdef get(self, int k):
-        if k < self.segment_start.right:
-            # Slot `k` maps to position along the 'bottom' of the grid.
-            return TwoD(0, 1 + k // self.io_capacity)
-        elif k < self.segment_start.top:
-            # Slot `k` maps to position along the ['right'] side of the grid.
-            return TwoD(1 + (k - self.segment_start.right) // self.io_capacity,
-                        self.extent.row + 1)
-        elif k < self.segment_start.left:
-            # Slot `k` maps to position along the top of the grid.
-            return TwoD(self.extent.column + 1,
-                        self.extent.row - (k - self.segment_start.top)
-                        // self.io_capacity)
-        else:
-            # Assume slot `k` maps to position along the left of the grid.
-            return TwoD(self.extent.column - (k - self.segment_start.left) //
-                        self.io_capacity, 0)
-
-
-cdef class VPRAutoSlotKeyTo2dPosition:
-    cdef int io_count
-    cdef int logic_count
-    cdef int io_capacity
-    cdef Extent2D extent
-    cdef VPRIOSlotKeyTo2dPosition io_s2p
-    cdef SlotKeyTo2dPosition logic_s2p
-    cdef BlockTypeCount slot_count
-
-    def __cinit__(self, int io_count, int logic_count, int io_capacity=2):
-        self.io_count = io_count
-        self.logic_count = logic_count
-        self.io_capacity = io_capacity
-
-        self.extent = Extent2D()
-        self.extent.row = <int>ceil(sqrt(logic_count))
-        self.extent.column = self.extent.row
-
-        if (io_count > 2 * self.io_capacity * (self.extent.row +
-                                               self.extent.column)):
-            # The size determined based on the number of logic blocks does not
-            # provide enough spots for the inputs/outputs along the perimeter.
-            # Increase extents of the grid to fit IO.
-            self.extent.row = <int>ceil(sqrt(io_count + logic_count))
-            self.extent.column = self.extent.row
-
-        cdef Extent2D io_extent
-
-        if (io_count > 0):
-            io_extent = self.extent
-
-        self.io_s2p = VPRIOSlotKeyTo2dPosition(io_extent, self.io_capacity)
-
-        # Logic grid starts at `(1, 1)`.
-        self.logic_s2p = SlotKeyTo2dPosition(self.extent.row, TwoD(1, 1))
-        self.slot_count = BlockTypeCount(len(self.io_s2p), self.extent.row *
-                                         self.extent.column)
-
-    def __len__(self):
-        return self.slot_count.io + self.slot_count.logic
-
-    cdef inline position0(self, TwoD position):
-        return position - self.logic_s2p.offset
-
-    cdef inline in_bounds(self, TwoD position):
-        cdef TwoD p = self.position0(position)
-        return not (p.x < 0 or p.x >= self.extent.column or p.y < 0
-                    or p.y >= self.extent.row)
-
-    def __getitem__(self, k):
-        return self.get(k)
-
-    cdef get0(self, k):
-        return self.position0(self.get(k))
-
-    cdef get(self, k):
-        if k < self.slot_count.io:
-            return self.io_s2p.get(k)
-        else:
-            return self.logic_s2p.get(k - self.slot_count.io)
-
-    property slot_count:
-        def __get__(self):
-            return self.slot_count
-
-    property io_s2p:
-        def __get__(self):
-            return self.io_s2p
-
-    property logic_s2p:
-        def __get__(self):
-            return self.logic_s2p
-
-    property extent:
-        def __get__(self):
-            return self.extent
-
-    property io_capacity:
-        def __get__(self):
-            return self.io_capacity
-
-
-cdef class MovePattern:
-    cdef int magnitude
-    cdef int double_magnitude
-    cdef int shift
-
-    def __cinit__(self, int magnitude, int shift=0):
-        self.magnitude = magnitude
-        self.double_magnitude = 2 * magnitude
-        self.shift = shift
-
-    def __getitem__(self, int i):
-        return self.get(i)
-
-    cdef inline get(self, int i):
-        if self.magnitude == 0:
-            return 0
-        cdef int index = (i + 2 * self.double_magnitude -
-                          ((self.shift + self.magnitude + 1) %
-                           self.double_magnitude))
-        if (index % self.double_magnitude) < self.magnitude:
-            return self.magnitude
-        else:
-            return -self.magnitude
-
-    property magnitude:
-        def __get__(self):
-            return self.magnitude
-
-        def __set__(self, value):
-            self.magnitude = value
-            self.double_magnitude = 2 * self.magnitude
-
-    property shift:
-        def __get__(self):
-            return self.shift
-
-        def __set__(self, value):
-            self.shift = value
-
-
-cdef class MovePattern2d:
-    cdef Extent2D extent
-    cdef int size
-    cdef MovePattern row
-    cdef MovePattern column
-
-    def __init__(self, Extent2D magnitude, Extent2D shift, Extent2D extent):
-        self.row = MovePattern(magnitude.row, shift.row)
-        self.column = MovePattern(magnitude.column, shift.column)
-        self.extent = extent
-        self.size = extent.row * extent.column
-
-    cdef inline column_i(self, int i):
-        return ((i // self.extent.row) + self.extent.column *
-                (i % self.extent.row))
-
-    cdef inline get_column(self, int i):
-        return self.column.get(self.column_i(i))
-
-    cdef inline get_row(self, int i):
-        return self.row.get(i)
-
-    cdef inline get(self, int i):
-        return Extent2D(self.get_row(i), self.get_column(i))
-
-    def __getitem__(self, int i):
-        return self.get(i)
-
-    def __len__(self):
-        return self.size
-
-    property row:
-        def __get__(self):
-            return self.row
-
-    property column:
-        def __get__(self):
-            return self.column
-
-
-cdef class MovePatternInBounds:
-    cdef int extent
-    cdef MovePattern pattern
-
-    def __init__(self, int extent, int magnitude, int shift=0):
-        self.extent = extent
-        self.pattern = MovePattern(magnitude, shift)
-
-    def __getitem__(self, int i):
-        return self.get(i)
-
-    cdef inline int get(self, int i):
-        # We still need to use the offset-based position for computing the
-        # target position.
-        cdef int move = self.pattern.get(i)
-        cdef int target = i + move
-        if target < 0 or target >= self.extent:
-            # If the displacement targets a location that is outside the
-            # boundaries, set displacement to zero.
-            return 0
-        return move
-
-    def __len__(self):
-        return self.extent
-
-    property extent:
-        def __get__(self): return self.extent
-
-    property magnitude:
-        def __get__(self):
-            return self.pattern.magnitude
-        def __set__(self, value):
-            self.pattern.magnitude = value
-
-    property shift:
-        def __get__(self):
-            return self.pattern.shift
-        def __set__(self, value):
-            self.pattern.shift = value
-
-    property pattern:
-        def __get__(self): return self.pattern
-
-
-cdef class MovePatternInBounds2d:
-    cdef VPRAutoSlotKeyTo2dPosition s2p
-    cdef MovePattern2d pattern
-
-    def __cinit__(self, Extent2D magnitude, Extent2D shift,
-                  VPRAutoSlotKeyTo2dPosition slot_key_to_position):
-        self.s2p = slot_key_to_position
-        self.pattern = MovePattern2d(magnitude, shift, self.s2p.extent)
-
-    def __getitem__(self, i):
-        return self.get(i)
-
-    cdef inline int get(self, int i):
-        # Get zero-based position, since displacement patterns are indexed
-        # starting at zero.
-        cdef TwoD position0 = self.s2p.get0(i)
-
-        # We still need to use the offset-based position for computing the
-        # target position.
-        cdef TwoD position = self.s2p.get(i)
-        cdef TwoD move = TwoD(self.pattern.column.get(position0.x),
-                              self.pattern.row.get(position0.y))
-        cdef TwoD target = position + move
-        if not self.s2p.in_bounds(target):
-            # If the displacement targets a location that is outside the
-            # boundaries, set displacement to zero.
-            return 0
-        return move.x * self.s2p.extent.row + move.y
-
-    def __len__(self):
-        return len(self.pattern)
-
-    property pattern:
-        def __get__(self):
-            return self.pattern
-
-    property magnitude:
-        def __get__(self):
-            return self.pattern.magnitude
-        def __set__(self, value):
-            self.pattern.magnitude = value
-
-    property shift:
-        def __get__(self):
-            return self.pattern.shift
-        def __set__(self, value):
-            self.pattern.shift = value
-
-
-cdef class VPRMovePattern:
-    cdef VPRAutoSlotKeyTo2dPosition s2p
-    cdef int io_slot_count
-    cdef MovePatternInBounds io_pattern
-    cdef MovePatternInBounds2d logic_pattern
-
-    def __init__(self, int io_magnitude, int io_shift,
-                 Extent2D logic_magnitude, Extent2D logic_shift,
-                 VPRAutoSlotKeyTo2dPosition slot_key_to_position):
-        self.s2p = slot_key_to_position
-        self.io_slot_count = self.s2p.slot_count.io
-        self.io_pattern = MovePatternInBounds(self.io_slot_count,
-                                              io_magnitude, io_shift)
-        self.logic_pattern = MovePatternInBounds2d(logic_magnitude,
-                                                   logic_shift, self.s2p)
-
-    def __getitem__(self, i):
-        return self.get(i)
-
-    cdef inline int get(self, int i):
-        if i < self.io_slot_count:
-            return self.io_pattern.get(i)
-        else:
-            return self.logic_pattern.get(i)
-
-    def __len__(self):
-        return len(self.s2p)
-
-    property io_pattern:
-        def __get__(self): return self.io_pattern
-
-    property logic_pattern:
-        def __get__(self): return self.logic_pattern
-
-
 cdef class cAnnealSchedule:
     cdef AnnealSchedule *data
 
@@ -690,12 +386,102 @@ cdef class cAnnealSchedule:
         self.data.update_temperature()
 
 
+cdef PatternParams2D[pair[int32_t, int32_t]] random_2d_pattern_params(
+        pair[int32_t,int32_t] max_magnitude, VPRAutoSlotKeyTo2dPosition vpr_s2p):
+    cdef pair[int32_t, int32_t] m
+    m = make_pair(<int32_t>fmin(<int32_t>vpr_s2p._data.extent.first - 1,
+                                <int32_t>max_magnitude.first),
+                  <int32_t>fmin(<int32_t>vpr_s2p._data.extent.second - 1,
+                                <int32_t>max_magnitude.second))
+
+    cdef PatternParams2D[pair[int32_t, int32_t]] params
+
+    params.magnitude = make_pair(
+        <int32_t>np.random.randint(0, <int32_t>max_magnitude.first + 1),
+        <int32_t>np.random.randint(0, <int32_t>max_magnitude.second + 1))
+
+    while ((<int32_t>params.magnitude.first == 0) and
+           (<int32_t>params.magnitude.second == 0)):
+        params.magnitude = make_pair(
+            <int32_t>np.random.randint(0, <int32_t>max_magnitude.first + 1),
+            <int32_t>np.random.randint(0, <int32_t>max_magnitude.second + 1))
+
+    cdef int32_t max_shift
+    cdef int32_t shift_first = 0
+    cdef int32_t shift_second = 0
+
+    if <int32_t>params.magnitude.first > 0:
+        max_shift = 2 * <int32_t>params.magnitude.first - 1
+        if <int32_t>vpr_s2p._data.extent.first <= 2 * <int32_t>params.magnitude.first:
+            max_shift = <int32_t>params.magnitude.first - 1
+        shift_first = np.random.randint(max_shift + 1)
+
+    if <int32_t>params.magnitude.second > 0:
+        max_shift = 2 * <int32_t>params.magnitude.second - 1
+        if <int32_t>(vpr_s2p._data.extent).second <= (2 * <int32_t>params.magnitude.second):
+            max_shift = <int32_t>params.magnitude.second - 1
+        shift_second = np.random.randint(max_shift + 1)
+    params.shift = make_pair(shift_first, shift_second)
+    return params
+
+
+cdef PatternParams random_pattern_params(int32_t max_magnitude, int32_t extent):
+    max_magnitude = <int32_t>fmin(extent - 1, max_magnitude)
+    cdef int32_t magnitude = <int32_t>np.random.randint(0, max_magnitude + 1)
+
+    while magnitude == 0:
+        magnitude = <int32_t>np.random.randint(0, max_magnitude + 1)
+
+    shift = 0
+
+    if magnitude > 0:
+        max_shift = 2 * magnitude - 1
+        if extent <= 2 * magnitude:
+            max_shift = magnitude - 1
+        shift = <int32_t>np.random.randint(max_shift + 1)
+
+    cdef PatternParams result
+    result.magnitude = magnitude
+    result.shift = shift
+    return result
+
+
+def random_vpr_pattern(VPRAutoSlotKeyTo2dPosition vpr_s2p, max_logic_move=None,
+                       max_io_move=None):
+    cdef int32_t io_extent = vpr_s2p._data.slot_count.io
+    cdef PatternParams io_params
+    cdef PatternParams2D[pair[int32_t, int32_t]] logic_params
+    cdef pair[int32_t, int32_t] _max_logic_move
+
+    if max_io_move is None:
+        max_io_move = io_extent - 1
+    io_params = random_pattern_params(max_io_move, io_extent)
+    if max_logic_move is None:
+        _max_logic_move = make_pair(<int32_t>(<int32_t>vpr_s2p._data.extent.first - 1),
+                                    <int32_t>(<int32_t>vpr_s2p._data.extent.second - 1))
+    else:
+        _max_logic_move = make_pair(<int32_t>max_logic_move[0],
+                                    <int32_t>max_logic_move[1])
+    logic_params = random_2d_pattern_params(_max_logic_move, vpr_s2p)
+    return VPRMovePattern(io_params.magnitude, io_params.shift,
+                          (<int32_t>logic_params.magnitude.first,
+                           <int32_t>logic_params.magnitude.second),
+                          (<int32_t>logic_params.shift.first,
+                           <int32_t>logic_params.shift.second), vpr_s2p)
+
+
+#     VPRMovePattern(params.magnitude.first, io_shift, logic_magnitude,
+#                   logic_shift,
+#                   slot_key_to_position):
+
+
+
 cpdef slot_moves(int32_t[:] output, uint32_t[:] slot_keys,
                  VPRMovePattern move_pattern):
     cdef int i
 
     for i in xrange(len(output)):
-        output[i] = move_pattern.get(slot_keys[i])
+        output[i] = move_pattern(slot_keys[i])
 
 
 cpdef extract_positions(int32_t[:] p_x, int32_t[:] p_y, uint32_t[:] slot_keys,
@@ -703,12 +489,12 @@ cpdef extract_positions(int32_t[:] p_x, int32_t[:] p_y, uint32_t[:] slot_keys,
     # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on permutation
     # slot assignments.
     cdef int i
-    cdef TwoD position
+    cdef pair[int32_t, int32_t] position
 
     for i in xrange(len(slot_keys)):
-        position = s2p.get(slot_keys[i])
-        p_x[i] = position.x
-        p_y[i] = position.y
+        position = deref(s2p._data)(slot_keys[i])
+        p_x[i] = <int32_t>position.first
+        p_y[i] = <int32_t>position.second
 
 
 def get_std_dev(int n, double sum_x_squared, double av_x):

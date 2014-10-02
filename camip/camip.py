@@ -35,10 +35,10 @@ from scipy.stats import itemfreq
 import scipy.sparse as sparse
 
 from cyplace_experiments.data import open_netlists_h5f
-from .CAMIP import (evaluate_moves, VPRMovePattern, VPRAutoSlotKeyTo2dPosition,
-                    Extent2D, slot_moves, extract_positions, cAnnealSchedule,
-                    get_std_dev, sort_netlist_keys, sum_float_by_key,
-                    copy_e_c_to_omega, sum_xy_vectors)
+from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
+                    random_vpr_pattern, slot_moves, extract_positions,
+                    cAnnealSchedule, get_std_dev, sort_netlist_keys,
+                    sum_float_by_key, copy_e_c_to_omega, sum_xy_vectors)
 
 try:
     profile
@@ -52,7 +52,7 @@ class VPRSchedule(object):
         self.inner_num = inner_num
         self.moves_per_temperature = inner_num * pow(netlist.block_count,
                                                      1.33333)
-        rlim = min(self.s2p.extent.row, self.s2p.extent.column)
+        rlim = min(*self.s2p.extent)
         if placer is not None:
             start_temperature = self.get_starting_temperature(placer)
         else:
@@ -87,7 +87,7 @@ class VPRSchedule(object):
             max_logic_move = max(self.anneal_schedule.rlim, 1)
             non_zero_moves, rejected = placer.run_iteration(
                 np.random.randint(1000000), self.anneal_schedule.temperature,
-                max_logic_move=Extent2D(max_logic_move, max_logic_move))
+                max_logic_move=(max_logic_move, max_logic_move))
             total_moves += non_zero_moves
             rejected_moves += len(rejected)
         success_ratio = (total_moves - rejected_moves) / float(total_moves)
@@ -141,63 +141,6 @@ class MatrixNetlist(object):
         assert((self.net_ones * self.C == self.r).all())
 
 
-def random_pattern_params(max_magnitude, extent, non_zero=True):
-    max_magnitude = min(extent - 1, max_magnitude)
-    magnitude = np.random.randint(0, max_magnitude + 1)
-    while non_zero and magnitude == 0:
-        magnitude = np.random.randint(0, max_magnitude + 1)
-
-    shift = 0
-
-    if magnitude > 0:
-        max_shift = 2 * magnitude - 1
-        if extent <= 2 * magnitude:
-            max_shift = magnitude - 1
-        shift = np.random.randint(max_shift + 1)
-
-    return magnitude, shift
-
-
-def random_2d_pattern_params(max_magnitude, vpr_s2p):
-    max_magnitude.row = min(vpr_s2p.extent.row - 1, max_magnitude.row)
-    max_magnitude.column = min(vpr_s2p.extent.column - 1, max_magnitude.column)
-
-    magnitude = Extent2D()
-    magnitude.row = np.random.randint(0, max_magnitude.row + 1)
-    magnitude.column = np.random.randint(0, max_magnitude.column + 1)
-
-    while (magnitude.row == 0) and (magnitude.column == 0):
-        magnitude.row = np.random.randint(0, max_magnitude.row + 1)
-        magnitude.column = np.random.randint(0, max_magnitude.column + 1)
-
-    shift = Extent2D()
-
-    if magnitude.row > 0:
-        max_shift = 2 * magnitude.row - 1
-        if vpr_s2p.extent.row <= 2 * magnitude.row:
-            max_shift = magnitude.row - 1
-        shift.row = np.random.randint(max_shift + 1)
-
-    if magnitude.column > 0:
-        max_shift = 2 * magnitude.column - 1
-        if vpr_s2p.extent.column <= 2 * magnitude.column:
-            max_shift = magnitude.column - 1
-        shift.column = np.random.randint(max_shift + 1)
-    return magnitude, shift
-
-
-def random_vpr_pattern(vpr_s2p, max_logic_move=None, max_io_move=None):
-    io_extent = vpr_s2p.slot_count.io
-    if max_io_move is None:
-        max_io_move = io_extent - 1
-    io_move, io_shift = random_pattern_params(max_io_move, io_extent)
-    if max_logic_move is None:
-        max_logic_move = Extent2D(vpr_s2p.extent.row - 1,
-                                  vpr_s2p.extent.column - 1)
-    logic_move, logic_shift = random_2d_pattern_params(max_logic_move, vpr_s2p)
-    return VPRMovePattern(io_move, io_shift, logic_move, logic_shift, vpr_s2p)
-
-
 class CAMIP(object):
     def __init__(self, netlist, io_capacity=2):
         self.netlist = netlist
@@ -207,7 +150,8 @@ class CAMIP(object):
         self.logic_count = netlist.block_type_counts['.clb']
         self.s2p = VPRAutoSlotKeyTo2dPosition(self.io_count, self.logic_count,
                                               io_capacity)
-        self.slot_block_keys = np.empty(len(self.s2p), dtype=np.uint32)
+        self.slot_block_keys = np.empty(self.s2p.total_slot_count,
+                                        dtype=np.uint32)
         self.slot_block_keys[:] = netlist.block_count
 
         # Fill IO slots.
@@ -217,7 +161,7 @@ class CAMIP(object):
                                                          '.output')][:self
                                                                      .io_count]
         # Fill logic slots.
-        logic_start = self.s2p.slot_count.io
+        logic_start = self.s2p.io_slot_count
         logic_end = logic_start + self.logic_count
         self.slot_block_keys[logic_start:logic_end] = [i for i, t in
                                                        enumerate(netlist
@@ -280,8 +224,8 @@ class CAMIP(object):
         The shuffle is aware of IO and logic slots in the placement, and will
         keep IO and logic within the corresponding areas of the permutation.
         '''
-        np.random.shuffle(self.slot_block_keys[:self.s2p.slot_count.io])
-        np.random.shuffle(self.slot_block_keys[self.s2p.slot_count.io:])
+        np.random.shuffle(self.slot_block_keys[:self.s2p.io_slot_count])
+        np.random.shuffle(self.slot_block_keys[self.s2p.io_slot_count:])
         self._sync_slot_block_keys_to_block_slot_keys()
 
     def _sync_block_slot_keys_to_slot_block_keys(self):
@@ -372,9 +316,8 @@ class CAMIP(object):
         pass
 
     def assess_groups(self, temperature):
-        total_slot_count = len(self.s2p)
         self.block_group_keys = np.fromiter((min(k1, k2) if k1 != k2 else
-                                             total_slot_count
+                                             self.s2p.total_slot_count
                                              for k1, k2 in
                                              itertools
                                              .izip(self.block_slot_keys,

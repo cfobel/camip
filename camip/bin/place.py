@@ -26,6 +26,7 @@ def place(net_file_namebase):
 if __name__ == '__main__':
     #import matplotlib.pyplot as plt
 
+    #import pudb; pudb.set_trace()
     if len(sys.argv) == 3:
         np.random.seed(int(sys.argv[2]))
     placer, costs = place(sys.argv[1])
