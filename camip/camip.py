@@ -315,7 +315,6 @@ class CAMIP(object):
         self.move_pattern = random_vpr_pattern(self.s2p,
                                                max_io_move=max_io_move,
                                                max_logic_move=max_logic_move)
-        # TODO: Implement `slot_moves` function using Thrust `transform`.
         slot_moves(self.block_slot_moves, self.block_slot_keys,
                    self.move_pattern)
         self.block_slot_keys_prime[:] = (self.block_slot_keys +
