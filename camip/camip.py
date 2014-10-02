@@ -105,6 +105,7 @@ class VPRSchedule(object):
             print (self.anneal_schedule.temperature, self.anneal_schedule.rlim,
                    self.anneal_schedule.success_ratio)
         end = time.time()
+        placer.finalize()
         print 'Runtime: %.2fs' % (end - start)
         return costs
 
@@ -195,7 +196,6 @@ class CAMIP(object):
         # Create reverse-mapping, from each block-key to the permutation slot
         # the block occupies.
         self.block_slot_keys = np.empty(netlist.block_count, dtype=np.uint32)
-        #self.block_slot_keys[netlist.global_blocks] =
         self.block_slot_moves = np.empty(netlist.block_count, dtype=np.int32)
         self.block_slot_keys_prime = np.empty_like(self.block_slot_keys)
         self._sync_slot_block_keys_to_block_slot_keys()
@@ -302,12 +302,9 @@ class CAMIP(object):
         # `omega`: $\Omega \in \mathbb{M}_{mn}$, $\omega_{ij} = e_cj$.
         copy_e_c_to_omega(self.e_c.ravel(), self.omega_prime.col,
                           self.omega.data)
-        #self.omega.data[:] = map(self.e_c.ravel().__getitem__,
-                                 #self.netlist.C.col)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
-        #self.n_c = self.omega.sum(axis=1)
         N = sum_float_by_key(self.omega_prime.row, self.omega.data,
                              self._block_keys, self._n_c)
         return self.theta
@@ -318,6 +315,7 @@ class CAMIP(object):
         self.move_pattern = random_vpr_pattern(self.s2p,
                                                max_io_move=max_io_move,
                                                max_logic_move=max_logic_move)
+        # TODO: Implement `slot_moves` function using Thrust `transform`.
         slot_moves(self.block_slot_moves, self.block_slot_keys,
                    self.move_pattern)
         self.block_slot_keys_prime[:] = (self.block_slot_keys +
@@ -338,6 +336,8 @@ class CAMIP(object):
                        self.p_y, self.p_y_prime, self.e_y, self.e_y2,
                        self.r_inv, 1.59)
 
+        # TODO: Fuse `evaluate_moves` with `sum_float_by_key` to
+        # _(potentially)_ improve performance.
         sum_float_by_key(self.omega_prime.row, self.omega_prime.data,
                          self._block_keys, self.omega_prime.data)
         self.delta_n = self.n_c_prime.ravel() - self.n_c
@@ -379,6 +379,7 @@ class CAMIP(object):
         rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
         return (moved_mask.size - unmoved_count), rejected_block_keys
 
+    @profile
     def apply_groups(self, rejected_move_block_keys):
         if len(rejected_move_block_keys) == 0:
             return
@@ -386,7 +387,6 @@ class CAMIP(object):
             self.block_slot_keys[rejected_move_block_keys])
         self.block_slot_keys, self.block_slot_keys_prime = (
             self.block_slot_keys_prime, self.block_slot_keys)
-        self._sync_block_slot_keys_to_slot_block_keys()
 
     @profile
     def run_iteration(self, seed, temperature, max_io_move=None,
@@ -398,6 +398,11 @@ class CAMIP(object):
         self.apply_groups(rejected_move_block_keys)
         self.evaluate_placement()
         return moved_count, rejected_move_block_keys
+
+    def finalize(self):
+        # Copy the final position of each block to the slot-to-block-key
+        # mapping.
+        self._sync_block_slot_keys_to_slot_block_keys()
 
 
 def main():

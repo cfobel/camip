@@ -7,15 +7,16 @@ import numpy as np
 cimport numpy as np
 from cythrust.thrust.pair cimport pair, make_pair
 from cythrust.thrust.sort cimport sort_by_key
-from cythrust.thrust.reduce cimport accumulate_by_key
+from cythrust.thrust.reduce cimport accumulate_by_key, reduce_by_key
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
 from cythrust.thrust.copy cimport copy_n
 from cythrust.thrust.transform cimport transform, transform2
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
 from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
-from cythrust.thrust.tuple cimport make_tuple5, make_tuple2
-from cythrust.thrust.functional cimport (unpack_binary_args, square,
-                                         unpack_quinary_args, plus)
+from cythrust.thrust.tuple cimport make_tuple5, make_tuple4, make_tuple2
+from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
+                                         unpack_quinary_args, plus,
+                                         reduce_plus4)
 cimport cython
 
 cdef extern from "math.h" nogil:
@@ -237,25 +238,23 @@ cpdef sum_xy_vectors(int32_t[:] block_keys, int32_t[:] net_keys,
                      int32_t[:] reduced_keys):
     cdef size_t count = net_keys.size
     cdef square[float] square_f
+    cdef equal_to[int32_t] reduce_compare
+    cdef reduce_plus4[float] reduce_plus4
 
-    accumulate_by_key(
-        &net_keys[0], &net_keys[0] + count,
-        make_permutation_iterator(&p_x[0], &block_keys[0]), &reduced_keys[0],
-        &e_x[0])
-    accumulate_by_key(
-        &net_keys[0], &net_keys[0] + count,
-        make_transform_iterator(
-            make_permutation_iterator(&p_x[0], &block_keys[0]), square_f),
-        &reduced_keys[0], &e_x2[0])
-    accumulate_by_key(
-        &net_keys[0], &net_keys[0] + count,
-        make_permutation_iterator(&p_y[0], &block_keys[0]), &reduced_keys[0],
-        &e_y[0])
-    accumulate_by_key(
-        &net_keys[0], &net_keys[0] + count,
-        make_transform_iterator(
-            make_permutation_iterator(&p_y[0], &block_keys[0]), square_f),
-        &reduced_keys[0], &e_y2[0])
+    reduce_by_key(
+        &net_keys[0],  # `keys_first`
+        &net_keys[0] + count,  # `keys_last`
+        make_zip_iterator(  # `values_first`
+            make_tuple4(
+                make_permutation_iterator(&p_x[0], &block_keys[0]),
+                make_transform_iterator(
+                    make_permutation_iterator(&p_x[0], &block_keys[0]), square_f),
+                make_permutation_iterator(&p_y[0], &block_keys[0]),
+                make_transform_iterator(
+                    make_permutation_iterator(&p_y[0], &block_keys[0]), square_f))),
+        &reduced_keys[0],  # `keys_output`
+        make_zip_iterator(make_tuple4(&e_x[0], &e_x2[0], &e_y[0], &e_y2[0])),
+        reduce_compare, reduce_plus4)
 
 
 cpdef copy_e_c_to_omega(float[:] e_c, int32_t[:] block_keys, float[:] omega):
@@ -325,14 +324,6 @@ cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
                                 make_permutation_iterator(&r_inv[0], &col[0]))),
                         deref(eval_func_tuple)))), deref(plus2_tuple)), count,
         &output[0])
-
-    # for k in xrange(count):
-    #     i = row[k]
-    #     j = col[k]
-    #     output[k] = beta * (evaluate_move(i, j, p_x, p_x_prime, e_x, e_x_2,
-    #                                       r_inv) +
-    #                         evaluate_move(i, j, p_y, p_y_prime, e_y, e_y_2,
-    #                                       r_inv))
 
 
 cdef class cAnnealSchedule:
@@ -475,12 +466,6 @@ def random_vpr_pattern(VPRAutoSlotKeyTo2dPosition vpr_s2p, max_logic_move=None,
                            <int32_t>logic_params.magnitude.second),
                           (<int32_t>logic_params.shift.first,
                            <int32_t>logic_params.shift.second), vpr_s2p)
-
-
-#     VPRMovePattern(params.magnitude.first, io_shift, logic_magnitude,
-#                   logic_shift,
-#                   slot_key_to_position):
-
 
 
 cpdef slot_moves(int32_t[:] output, uint32_t[:] slot_keys,
