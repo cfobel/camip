@@ -10,7 +10,7 @@ from cythrust.thrust.sort cimport sort_by_key
 from cythrust.thrust.reduce cimport accumulate_by_key
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
 from cythrust.thrust.copy cimport copy_n
-from cythrust.thrust.transform cimport transform
+from cythrust.thrust.transform cimport transform, transform2
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
 from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
 from cythrust.thrust.tuple cimport make_tuple5, make_tuple2
@@ -94,6 +94,9 @@ cdef extern from "CAMIP.hpp" nogil:
         cVPRMovePattern(int io_magnitude, int io_shift, T logic_magnitude,
                         T logic_shift,
                         cVPRAutoSlotKeyTo2dPosition[T] slot_key_to_position)
+
+    cdef cppclass block_group_key[T]:
+        block_group_key(T)
 
 
 cdef class VPRMovePattern:
@@ -499,3 +502,16 @@ cpdef extract_positions(int32_t[:] p_x, int32_t[:] p_y, uint32_t[:] slot_keys,
 
 def get_std_dev(int n, double sum_x_squared, double av_x):
     return c_get_std_dev(n, sum_x_squared, av_x)
+
+
+def compute_block_group_keys(uint32_t[:] block_slot_keys,
+                             uint32_t[:] block_slot_keys_prime,
+                             int32_t[:] block_group_keys,
+                             int32_t sentinel_key):
+    cdef size_t count = block_slot_keys.size
+    cdef block_group_key[int32_t] *group_key_func = \
+        new block_group_key[int32_t](sentinel_key)
+
+    transform2(&block_slot_keys[0], &block_slot_keys[0] + count,
+               &block_slot_keys_prime[0], &block_group_keys[0],
+               deref(group_key_func))

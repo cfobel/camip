@@ -28,7 +28,6 @@ which should easily be ported to libraries supporting sparse-matrix operations.
     along with CAMIP.  If not, see <http://www.gnu.org/licenses/>.
 '''
 from __future__ import division
-import itertools
 import pandas as pd
 import numpy as np
 from scipy.stats import itemfreq
@@ -38,7 +37,8 @@ from cyplace_experiments.data import open_netlists_h5f
 from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     random_vpr_pattern, slot_moves, extract_positions,
                     cAnnealSchedule, get_std_dev, sort_netlist_keys,
-                    sum_float_by_key, copy_e_c_to_omega, sum_xy_vectors)
+                    sum_float_by_key, copy_e_c_to_omega, sum_xy_vectors,
+                    compute_block_group_keys)
 
 try:
     profile
@@ -216,6 +216,8 @@ class CAMIP(object):
         self.n_c_prime = self.omega_prime.data[:netlist.block_count,
                                                np.newaxis]
         self.r_inv = np.reciprocal(netlist.r.A.ravel().astype(np.float32))
+        self.block_group_keys = np.empty(netlist.block_count, dtype=np.int32)
+        self._delta_s = np.empty(netlist.block_count, dtype=np.float32)
 
     def shuffle_placement(self):
         '''
@@ -315,21 +317,19 @@ class CAMIP(object):
         self.delta_n = self.n_c_prime - self.n_c
         pass
 
+    @profile
     def assess_groups(self, temperature):
-        self.block_group_keys = np.fromiter((min(k1, k2) if k1 != k2 else
-                                             self.s2p.total_slot_count
-                                             for k1, k2 in
-                                             itertools
-                                             .izip(self.block_slot_keys,
-                                                   self
-                                                   .block_slot_keys_prime)),
-                                            dtype=np.int32)
+        compute_block_group_keys(self.block_slot_keys,
+                                 self.block_slot_keys_prime,
+                                 self.block_group_keys,
+                                 self.s2p.total_slot_count)
         moved_mask = (self.block_slot_keys != self.block_slot_keys_prime)
         unmoved_count = moved_mask.size - moved_mask.sum()
 
+        #import pudb; pudb.set_trace()
         group_block_keys = np.argsort(self.block_group_keys)[:-unmoved_count]
         if len(group_block_keys) == 0:
-            self.delta_s = np.empty(0)
+            self.delta_s = self._delta_s[:0]
             return 0, np.empty(0)
         packed_group_segments = np.empty_like(group_block_keys)
         packed_group_segments[0] = 1
@@ -343,12 +343,14 @@ class CAMIP(object):
                                     (group_block_keys,
                                      packed_block_group_keys)))
 
-        self.delta_s = self.S.sum(axis=0).A.ravel()
+        N = sum_float_by_key(self.S.col, self.S.data, self._block_keys,
+                             self._delta_s)
+        self.delta_s = self._delta_s[:N]
 
         assess_urands = np.random.rand(len(self.delta_s))
         a = ((self.delta_s <= 0) | (assess_urands < np.exp(-self.delta_s /
                                                            temperature)))
-        rejected_block_keys = self.S.row[~a[packed_block_group_keys]]
+        rejected_block_keys = self.S.row[~a[self.S.col]]
         return (moved_mask.size - unmoved_count), rejected_block_keys
 
     def apply_groups(self, rejected_move_block_keys):
