@@ -266,17 +266,14 @@ cpdef sort_netlist_keys(int32_t[:] keys1, int32_t[:] keys2):
     sort_by_key(&keys1[0], &keys1[0] + <size_t>keys1.size, &keys2[0])
 
 
-cpdef sum_float_by_key(np.ndarray[np.int32_t,ndim=1] keys,
-                       np.ndarray[np.float32_t,ndim=1] values,
-                       np.ndarray[np.int32_t,ndim=1] reduced_keys,
-                       np.ndarray[np.float32_t,ndim=1] reduced_values):
-    cdef size_t count = (<int32_t*>accumulate_by_key(<int32_t *>keys.data,
-                                                     <int32_t *>keys.data +
+cpdef sum_float_by_key(int32_t[:] keys, float[:] values,
+                       int32_t[:] reduced_keys, float[:] reduced_values):
+    cdef size_t count = (<int32_t*>accumulate_by_key(&keys[0], &keys[0] +
                                                      <size_t>keys.size,
-                                                     <float *>values.data,
-                                                     <int32_t *>reduced_keys.data,
-                                                     <float *>reduced_values.data).first -
-                         <int32_t*>reduced_keys.data)
+                                                     &values[0],
+                                                     &reduced_keys[0],
+                                                     &reduced_values[0]).first
+                         - &reduced_keys[0])
     return count
 
 

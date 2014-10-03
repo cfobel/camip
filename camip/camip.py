@@ -28,10 +28,11 @@ which should easily be ported to libraries supporting sparse-matrix operations.
     along with CAMIP.  If not, see <http://www.gnu.org/licenses/>.
 '''
 from __future__ import division
+import time
 import pandas as pd
 import numpy as np
-from scipy.stats import itemfreq
 import scipy.sparse as sparse
+from collections import OrderedDict
 
 from cyplace_experiments.data import open_netlists_h5f
 from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
@@ -72,7 +73,7 @@ class VPRSchedule(object):
             placer.evaluate_moves()
             non_zero_moves, rejected = placer.assess_groups(1000000)
             total_moves += non_zero_moves
-            deltas = np.abs(placer.n_c_prime - placer.n_c).A.ravel()
+            deltas = np.abs(placer.n_c_prime.ravel() - placer.n_c)
             deltas_sum += deltas.sum()
             deltas_squared_sum += (deltas * deltas).sum()
         deltas_stddev = get_std_dev(total_moves, deltas_squared_sum, deltas_sum
@@ -95,6 +96,7 @@ class VPRSchedule(object):
         return total_moves, rejected_moves
 
     def run(self, placer):
+        start = time.time()
         costs = []
         while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
                placer.netlist.C.shape[1]):
@@ -102,6 +104,8 @@ class VPRSchedule(object):
             total_moves, rejected_moves = self.outer_iteration(placer)
             print (self.anneal_schedule.temperature, self.anneal_schedule.rlim,
                    self.anneal_schedule.success_ratio)
+        end = time.time()
+        print 'Runtime: %.2fs' % (end - start)
         return costs
 
 
@@ -111,22 +115,44 @@ class MatrixNetlist(object):
         self.connections = connections
         self.global_nets = (connections[connections['pin_key'] ==
                                         CLOCK_PIN]['net_key'].unique())
+        global_block_mask = (connections['net_key'].isin(self.global_nets) &
+                             (connections['pin_key'] == 0))
+        self.global_blocks = (connections[global_block_mask]['block_key']
+                              .unique().astype(dtype=np.int32))
+
         # Filter out connections that correspond to a global net.
         self.local_connections = connections[~connections['net_key']
                                              .isin(self.global_nets)]
+        net_keys = self.local_connections['net_key'].copy().ravel()
+        packed_keys = np.empty_like(net_keys)
+        packed_keys[0] = 1
+        packed_keys[1:] = (net_keys[1:] != net_keys[:-1])
+        self.local_connections['block_type'] = block_types[self.local_connections['block_key'].ravel()]
+        self.local_connections['net_key'] = np.cumsum(packed_keys) - 1
 
-        self.block_types = block_types
-        self.block_count = self.local_connections['block_key'].unique().size
-        self.block_type_counts = dict([(k, int(v)) for k, v in
-                                       itemfreq(self
-                                                .block_types[:self
-                                                             .block_count])])
-        #for i, (k, t) in self.local_connections[['block_key',
-                                                 #'block_type']].iterrows():
-            #if self.block_types[k] is None:
-                #self.block_types[k] = t
-                #self.block_type_counts[t] = (self.block_type_counts
-                                             #.setdefault(t, 0) + 1)
+        block_connections = self.local_connections.copy().sort(columns=
+                                                               ['block_key'])
+        block_keys = block_connections['block_key'].copy().ravel()
+        packed_keys = np.empty_like(block_keys)
+        packed_keys[0] = 1
+        packed_keys[1:] = (block_keys[1:] != block_keys[:-1])
+        block_connections['block_key'] = np.cumsum(packed_keys) - 1
+        self.local_connections = block_connections.sort(columns=['net_key'])
+        self.block_types = (self.local_connections
+                            .drop_duplicates(cols='block_key')
+                            .sort(['block_key',
+                                   'block_type'])['block_type'].copy())
+
+        b_types = OrderedDict([(v, i) for i, v in enumerate(('.clb', '.input',
+                                                             '.output'))])
+        keys = np.sort(np.array(map(b_types.__getitem__, self.block_types),
+                                dtype=np.int32))
+        counts = np.ones_like(keys, dtype=np.float32)
+        N = sum_float_by_key(keys, counts, keys, counts)
+        self.block_type_counts = OrderedDict(zip(b_types.keys(),
+                                                 counts[:N].astype(int)))
+        self.block_count = counts[:N].sum()
+        self.non_global_block_count = self.block_count - self.global_nets.size
 
         self.P = sparse.coo_matrix((self.local_connections['pin_key'],
                                     (self.local_connections['block_key'],
@@ -145,8 +171,9 @@ class CAMIP(object):
     def __init__(self, netlist, io_capacity=2):
         self.netlist = netlist
         self.io_capacity = io_capacity
-        self.io_count = (netlist.block_type_counts['.input'] +
-                         netlist.block_type_counts['.output'])
+
+        self.io_count = np.sum(netlist.block_type_counts[t]
+                               for t in ('.input', '.output'))
         self.logic_count = netlist.block_type_counts['.clb']
         self.s2p = VPRAutoSlotKeyTo2dPosition(self.io_count, self.logic_count,
                                               io_capacity)
@@ -155,22 +182,20 @@ class CAMIP(object):
         self.slot_block_keys[:] = netlist.block_count
 
         # Fill IO slots.
-        self.slot_block_keys[:self.io_count] = [i for i, t in
-                                                enumerate(netlist.block_types)
-                                                if t in ('.input',
-                                                         '.output')][:self
-                                                                     .io_count]
+        self.slot_block_keys[:self.io_count] = np.where(netlist.block_types
+                                                        .isin(('.input',
+                                                               '.output')))[0]
+
         # Fill logic slots.
         logic_start = self.s2p.io_slot_count
         logic_end = logic_start + self.logic_count
-        self.slot_block_keys[logic_start:logic_end] = [i for i, t in
-                                                       enumerate(netlist
-                                                                 .block_types)
-                                                       if t in ('.clb')]
+        self.slot_block_keys[logic_start:logic_end] = np.where(
+            netlist.block_types == '.clb')[0]
 
         # Create reverse-mapping, from each block-key to the permutation slot
         # the block occupies.
         self.block_slot_keys = np.empty(netlist.block_count, dtype=np.uint32)
+        #self.block_slot_keys[netlist.global_blocks] =
         self.block_slot_moves = np.empty(netlist.block_count, dtype=np.int32)
         self.block_slot_keys_prime = np.empty_like(self.block_slot_keys)
         self._sync_slot_block_keys_to_block_slot_keys()
@@ -218,6 +243,8 @@ class CAMIP(object):
         self.r_inv = np.reciprocal(netlist.r.A.ravel().astype(np.float32))
         self.block_group_keys = np.empty(netlist.block_count, dtype=np.int32)
         self._delta_s = np.empty(netlist.block_count, dtype=np.float32)
+        self._n_c = np.empty_like(netlist.C.row, dtype=np.float32)
+        self.n_c = self._n_c[:netlist.block_count]
 
     def shuffle_placement(self):
         '''
@@ -261,6 +288,10 @@ class CAMIP(object):
         # permutation slot assignments.
         extract_positions(self.p_x, self.p_y, self.block_slot_keys, self.s2p)
 
+        # TODO: Try using permutation iterators here rather than actually
+        # copying the data.  This might help to improve the performance by
+        # fusing the memory accesses with the calculations in the
+        # `sum_xy_vectors` function.
         self.X.data[:] = self.p_x[self.X.row]
         self.Y.data[:] = self.p_y[self.Y.row]
 
@@ -276,14 +307,16 @@ class CAMIP(object):
         self.theta = self.e_c.sum()
 
         # `omega`: $\Omega \in \mathbb{M}_{mn}$, $\omega_{ij} = e_cj$.
-        copy_e_c_to_omega(self.e_c.ravel(), self.netlist.C.col,
+        copy_e_c_to_omega(self.e_c.ravel(), self.omega_prime.col,
                           self.omega.data)
         #self.omega.data[:] = map(self.e_c.ravel().__getitem__,
                                  #self.netlist.C.col)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
-        self.n_c = self.omega.sum(axis=1)
+        #self.n_c = self.omega.sum(axis=1)
+        N = sum_float_by_key(self.omega_prime.row, self.omega.data,
+                             self._block_keys, self._n_c)
         return self.theta
 
     @profile
@@ -314,7 +347,7 @@ class CAMIP(object):
 
         sum_float_by_key(self.omega_prime.row, self.omega_prime.data,
                          self._block_keys, self.omega_prime.data)
-        self.delta_n = self.n_c_prime - self.n_c
+        self.delta_n = self.n_c_prime.ravel() - self.n_c
         pass
 
     @profile
@@ -326,31 +359,31 @@ class CAMIP(object):
         moved_mask = (self.block_slot_keys != self.block_slot_keys_prime)
         unmoved_count = moved_mask.size - moved_mask.sum()
 
-        #import pudb; pudb.set_trace()
-        group_block_keys = np.argsort(self.block_group_keys)[:-unmoved_count]
+        _group_block_keys = np.arange(self.block_group_keys.size,
+                                      dtype=self.block_group_keys.dtype)
+        sort_netlist_keys(self.block_group_keys.copy(), _group_block_keys)
+        group_block_keys = _group_block_keys[:-unmoved_count]
         if len(group_block_keys) == 0:
             self.delta_s = self._delta_s[:0]
             return 0, np.empty(0)
-        packed_group_segments = np.empty_like(group_block_keys)
+        packed_group_segments = np.empty_like(group_block_keys, dtype='int32')
         packed_group_segments[0] = 1
         packed_group_segments[1:] = (self.block_group_keys
                                      [group_block_keys][1:] !=
                                      self.block_group_keys
                                      [group_block_keys][:-1])
-        packed_block_group_keys = np.cumsum(packed_group_segments) - 1
+        packed_block_group_keys = np.cumsum(packed_group_segments,
+                                            dtype='int32') - 1
 
-        self.S = sparse.coo_matrix((self.delta_n[group_block_keys].A.ravel(),
-                                    (group_block_keys,
-                                     packed_block_group_keys)))
-
-        N = sum_float_by_key(self.S.col, self.S.data, self._block_keys,
-                             self._delta_s)
+        N = sum_float_by_key(packed_block_group_keys,
+                             self.delta_n[group_block_keys].copy(),
+                             self._block_keys, self._delta_s)
         self.delta_s = self._delta_s[:N]
 
         assess_urands = np.random.rand(len(self.delta_s))
         a = ((self.delta_s <= 0) | (assess_urands < np.exp(-self.delta_s /
                                                            temperature)))
-        rejected_block_keys = self.S.row[~a[self.S.col]]
+        rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
         return (moved_mask.size - unmoved_count), rejected_block_keys
 
     def apply_groups(self, rejected_move_block_keys):
