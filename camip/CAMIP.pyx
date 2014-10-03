@@ -230,7 +230,8 @@ cdef extern from "schedule.hpp" nogil:
         void update_temperature()
 
 
-cpdef sum_xy_vectors(int32_t[:] net_keys, float[:] X, float[:] Y,
+cpdef sum_xy_vectors(int32_t[:] block_keys, int32_t[:] net_keys,
+                     int32_t[:] p_x, int32_t[:] p_y,
                      float[:] e_x, float[:] e_x2,
                      float[:] e_y, float[:] e_y2,
                      int32_t[:] reduced_keys):
@@ -239,16 +240,22 @@ cpdef sum_xy_vectors(int32_t[:] net_keys, float[:] X, float[:] Y,
 
     accumulate_by_key(
         &net_keys[0], &net_keys[0] + count,
-        &X[0], &reduced_keys[0], &e_x[0])
+        make_permutation_iterator(&p_x[0], &block_keys[0]), &reduced_keys[0],
+        &e_x[0])
     accumulate_by_key(
         &net_keys[0], &net_keys[0] + count,
-        make_transform_iterator(&X[0], square_f), &reduced_keys[0], &e_x2[0])
+        make_transform_iterator(
+            make_permutation_iterator(&p_x[0], &block_keys[0]), square_f),
+        &reduced_keys[0], &e_x2[0])
     accumulate_by_key(
         &net_keys[0], &net_keys[0] + count,
-        &Y[0], &reduced_keys[0], &e_y[0])
+        make_permutation_iterator(&p_y[0], &block_keys[0]), &reduced_keys[0],
+        &e_y[0])
     accumulate_by_key(
         &net_keys[0], &net_keys[0] + count,
-        make_transform_iterator(&Y[0], square_f), &reduced_keys[0], &e_y2[0])
+        make_transform_iterator(
+            make_permutation_iterator(&p_y[0], &block_keys[0]), square_f),
+        &reduced_keys[0], &e_y2[0])
 
 
 cpdef copy_e_c_to_omega(float[:] e_c, int32_t[:] block_keys, float[:] omega):

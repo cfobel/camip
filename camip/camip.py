@@ -288,15 +288,8 @@ class CAMIP(object):
         # permutation slot assignments.
         extract_positions(self.p_x, self.p_y, self.block_slot_keys, self.s2p)
 
-        # TODO: Try using permutation iterators here rather than actually
-        # copying the data.  This might help to improve the performance by
-        # fusing the memory accesses with the calculations in the
-        # `sum_xy_vectors` function.
-        self.X.data[:] = self.p_x[self.X.row]
-        self.Y.data[:] = self.p_y[self.Y.row]
-
         # Star+ vectors
-        sum_xy_vectors(self.X.col, self.X.data, self.Y.data, self._e_x,
+        sum_xy_vectors(self.X.row, self.X.col, self.p_x, self.p_y, self._e_x,
                        self._e_x2, self._e_y, self._e_y2, self._block_keys)
         self.e_c[:] = 1.59 * (np.sqrt(self.e_x2 - np.square(self.e_x) *
                                       self.r_inv + 1) +
