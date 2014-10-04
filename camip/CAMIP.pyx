@@ -15,7 +15,7 @@ from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iter
 from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
 from cythrust.thrust.tuple cimport make_tuple5, make_tuple4, make_tuple2
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
-                                         unpack_quinary_args, plus,
+                                         unpack_quinary_args, plus, minus,
                                          reduce_plus4)
 cimport cython
 
@@ -507,3 +507,11 @@ def compute_block_group_keys(uint32_t[:] block_slot_keys,
     transform2(&block_slot_keys[0], &block_slot_keys[0] + count,
                &block_slot_keys_prime[0], &block_group_keys[0],
                deref(group_key_func))
+
+
+def compute_move_deltas(float[:] n_c, float[:] n_c_prime, float[:] delta_n):
+    cdef size_t count = n_c.size
+    cdef minus[float] minus_func
+
+    transform2(&n_c[0], &n_c[0] + count, &n_c_prime[0], &delta_n[0],
+               minus_func)

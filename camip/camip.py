@@ -39,7 +39,7 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     random_vpr_pattern, slot_moves, extract_positions,
                     cAnnealSchedule, get_std_dev, sort_netlist_keys,
                     sum_float_by_key, copy_e_c_to_omega, sum_xy_vectors,
-                    compute_block_group_keys)
+                    compute_block_group_keys, compute_move_deltas)
 
 try:
     profile
@@ -245,6 +245,7 @@ class CAMIP(object):
         self._delta_s = np.empty(netlist.block_count, dtype=np.float32)
         self._n_c = np.empty_like(netlist.C.row, dtype=np.float32)
         self.n_c = self._n_c[:netlist.block_count]
+        self.delta_n = np.empty(netlist.block_count, dtype=np.float32)
 
     def shuffle_placement(self):
         '''
@@ -334,7 +335,7 @@ class CAMIP(object):
                        self.r_inv, 1.59, self._block_keys,
                        self.omega_prime.data)
 
-        self.delta_n = self.n_c_prime.ravel() - self.n_c
+        compute_move_deltas(self.n_c_prime.ravel(), self.n_c, self.delta_n)
 
     @profile
     def assess_groups(self, temperature):
