@@ -28,16 +28,18 @@ which should easily be ported to libraries supporting sparse-matrix operations.
     along with CAMIP.  If not, see <http://www.gnu.org/licenses/>.
 '''
 from __future__ import division
-import itertools
+import time
 import pandas as pd
 import numpy as np
-from scipy.stats import itemfreq
 import scipy.sparse as sparse
+from collections import OrderedDict
 
 from cyplace_experiments.data import open_netlists_h5f
-from .CAMIP import (evaluate_moves, VPRMovePattern, VPRAutoSlotKeyTo2dPosition,
-                    Extent2D, slot_moves, extract_positions, cAnnealSchedule,
-                    get_std_dev)
+from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
+                    random_vpr_pattern, slot_moves, extract_positions,
+                    cAnnealSchedule, get_std_dev, sort_netlist_keys,
+                    sum_float_by_key, copy_e_c_to_omega, sum_xy_vectors,
+                    compute_block_group_keys)
 
 try:
     profile
@@ -51,7 +53,7 @@ class VPRSchedule(object):
         self.inner_num = inner_num
         self.moves_per_temperature = inner_num * pow(netlist.block_count,
                                                      1.33333)
-        rlim = min(self.s2p.extent.row, self.s2p.extent.column)
+        rlim = min(*self.s2p.extent)
         if placer is not None:
             start_temperature = self.get_starting_temperature(placer)
         else:
@@ -71,7 +73,7 @@ class VPRSchedule(object):
             placer.evaluate_moves()
             non_zero_moves, rejected = placer.assess_groups(1000000)
             total_moves += non_zero_moves
-            deltas = np.abs(placer.n_c_prime.A.ravel() - placer.n_c.A.ravel())
+            deltas = np.abs(placer.n_c_prime.ravel() - placer.n_c)
             deltas_sum += deltas.sum()
             deltas_squared_sum += (deltas * deltas).sum()
         deltas_stddev = get_std_dev(total_moves, deltas_squared_sum, deltas_sum
@@ -86,7 +88,7 @@ class VPRSchedule(object):
             max_logic_move = max(self.anneal_schedule.rlim, 1)
             non_zero_moves, rejected = placer.run_iteration(
                 np.random.randint(1000000), self.anneal_schedule.temperature,
-                max_logic_move=Extent2D(max_logic_move, max_logic_move))
+                max_logic_move=(max_logic_move, max_logic_move))
             total_moves += non_zero_moves
             rejected_moves += len(rejected)
         success_ratio = (total_moves - rejected_moves) / float(total_moves)
@@ -94,6 +96,7 @@ class VPRSchedule(object):
         return total_moves, rejected_moves
 
     def run(self, placer):
+        start = time.time()
         costs = []
         while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
                placer.netlist.C.shape[1]):
@@ -101,6 +104,8 @@ class VPRSchedule(object):
             total_moves, rejected_moves = self.outer_iteration(placer)
             print (self.anneal_schedule.temperature, self.anneal_schedule.rlim,
                    self.anneal_schedule.success_ratio)
+        end = time.time()
+        print 'Runtime: %.2fs' % (end - start)
         return costs
 
 
@@ -110,22 +115,44 @@ class MatrixNetlist(object):
         self.connections = connections
         self.global_nets = (connections[connections['pin_key'] ==
                                         CLOCK_PIN]['net_key'].unique())
+        global_block_mask = (connections['net_key'].isin(self.global_nets) &
+                             (connections['pin_key'] == 0))
+        self.global_blocks = (connections[global_block_mask]['block_key']
+                              .unique().astype(dtype=np.int32))
+
         # Filter out connections that correspond to a global net.
         self.local_connections = connections[~connections['net_key']
                                              .isin(self.global_nets)]
+        net_keys = self.local_connections['net_key'].copy().ravel()
+        packed_keys = np.empty_like(net_keys)
+        packed_keys[0] = 1
+        packed_keys[1:] = (net_keys[1:] != net_keys[:-1])
+        self.local_connections['block_type'] = block_types[self.local_connections['block_key'].ravel()]
+        self.local_connections['net_key'] = np.cumsum(packed_keys) - 1
 
-        self.block_types = block_types
-        self.block_count = self.local_connections['block_key'].unique().size
-        self.block_type_counts = dict([(k, int(v)) for k, v in
-                                       itemfreq(self
-                                                .block_types[:self
-                                                             .block_count])])
-        #for i, (k, t) in self.local_connections[['block_key',
-                                                 #'block_type']].iterrows():
-            #if self.block_types[k] is None:
-                #self.block_types[k] = t
-                #self.block_type_counts[t] = (self.block_type_counts
-                                             #.setdefault(t, 0) + 1)
+        block_connections = self.local_connections.copy().sort(columns=
+                                                               ['block_key'])
+        block_keys = block_connections['block_key'].copy().ravel()
+        packed_keys = np.empty_like(block_keys)
+        packed_keys[0] = 1
+        packed_keys[1:] = (block_keys[1:] != block_keys[:-1])
+        block_connections['block_key'] = np.cumsum(packed_keys) - 1
+        self.local_connections = block_connections.sort(columns=['net_key'])
+        self.block_types = (self.local_connections
+                            .drop_duplicates(cols='block_key')
+                            .sort(['block_key',
+                                   'block_type'])['block_type'].copy())
+
+        b_types = OrderedDict([(v, i) for i, v in enumerate(('.clb', '.input',
+                                                             '.output'))])
+        keys = np.sort(np.array(map(b_types.__getitem__, self.block_types),
+                                dtype=np.int32))
+        counts = np.ones_like(keys, dtype=np.float32)
+        N = sum_float_by_key(keys, counts, keys, counts)
+        self.block_type_counts = OrderedDict(zip(b_types.keys(),
+                                                 counts[:N].astype(int)))
+        self.block_count = counts[:N].sum()
+        self.non_global_block_count = self.block_count - self.global_nets.size
 
         self.P = sparse.coo_matrix((self.local_connections['pin_key'],
                                     (self.local_connections['block_key'],
@@ -140,91 +167,35 @@ class MatrixNetlist(object):
         assert((self.net_ones * self.C == self.r).all())
 
 
-def random_pattern_params(max_magnitude, extent, non_zero=True):
-    max_magnitude = min(extent - 1, max_magnitude)
-    magnitude = np.random.randint(0, max_magnitude + 1)
-    while non_zero and magnitude == 0:
-        magnitude = np.random.randint(0, max_magnitude + 1)
-
-    shift = 0
-
-    if magnitude > 0:
-        max_shift = 2 * magnitude - 1
-        if extent <= 2 * magnitude:
-            max_shift = magnitude - 1
-        shift = np.random.randint(max_shift + 1)
-
-    return magnitude, shift
-
-
-def random_2d_pattern_params(max_magnitude, vpr_s2p):
-    max_magnitude.row = min(vpr_s2p.extent.row - 1, max_magnitude.row)
-    max_magnitude.column = min(vpr_s2p.extent.column - 1, max_magnitude.column)
-
-    magnitude = Extent2D()
-    magnitude.row = np.random.randint(0, max_magnitude.row + 1)
-    magnitude.column = np.random.randint(0, max_magnitude.column + 1)
-
-    while (magnitude.row == 0) and (magnitude.column == 0):
-        magnitude.row = np.random.randint(0, max_magnitude.row + 1)
-        magnitude.column = np.random.randint(0, max_magnitude.column + 1)
-
-    shift = Extent2D()
-
-    if magnitude.row > 0:
-        max_shift = 2 * magnitude.row - 1
-        if vpr_s2p.extent.row <= 2 * magnitude.row:
-            max_shift = magnitude.row - 1
-        shift.row = np.random.randint(max_shift + 1)
-
-    if magnitude.column > 0:
-        max_shift = 2 * magnitude.column - 1
-        if vpr_s2p.extent.column <= 2 * magnitude.column:
-            max_shift = magnitude.column - 1
-        shift.column = np.random.randint(max_shift + 1)
-    return magnitude, shift
-
-
-def random_vpr_pattern(vpr_s2p, max_logic_move=None, max_io_move=None):
-    io_extent = vpr_s2p.slot_count.io
-    if max_io_move is None:
-        max_io_move = io_extent - 1
-    io_move, io_shift = random_pattern_params(max_io_move, io_extent)
-    if max_logic_move is None:
-        max_logic_move = Extent2D(vpr_s2p.extent.row - 1,
-                                  vpr_s2p.extent.column - 1)
-    logic_move, logic_shift = random_2d_pattern_params(max_logic_move, vpr_s2p)
-    return VPRMovePattern(io_move, io_shift, logic_move, logic_shift, vpr_s2p)
-
-
 class CAMIP(object):
-    def __init__(self, netlist):
+    def __init__(self, netlist, io_capacity=2):
         self.netlist = netlist
-        self.io_count = (netlist.block_type_counts['.input'] +
-                         netlist.block_type_counts['.output'])
+        self.io_capacity = io_capacity
+
+        self.io_count = np.sum(netlist.block_type_counts[t]
+                               for t in ('.input', '.output'))
         self.logic_count = netlist.block_type_counts['.clb']
         self.s2p = VPRAutoSlotKeyTo2dPosition(self.io_count, self.logic_count,
-                                              2)
-        self.slot_block_keys = np.empty(len(self.s2p), dtype=np.uint32)
+                                              io_capacity)
+        self.slot_block_keys = np.empty(self.s2p.total_slot_count,
+                                        dtype=np.uint32)
         self.slot_block_keys[:] = netlist.block_count
 
         # Fill IO slots.
-        self.slot_block_keys[:self.io_count] = [i for i, t in
-                                                enumerate(netlist.block_types)
-                                                if t in ('.input',
-                                                         '.output')][:self
-                                                                     .io_count]
+        self.slot_block_keys[:self.io_count] = np.where(netlist.block_types
+                                                        .isin(('.input',
+                                                               '.output')))[0]
+
         # Fill logic slots.
-        logic_start = self.s2p.slot_count.io
+        logic_start = self.s2p.io_slot_count
         logic_end = logic_start + self.logic_count
-        self.slot_block_keys[logic_start:logic_end] = [i for i, t in
-                                                       enumerate(netlist
-                                                                 .block_types)
-                                                       if t in ('.clb')]
+        self.slot_block_keys[logic_start:logic_end] = np.where(
+            netlist.block_types == '.clb')[0]
 
         # Create reverse-mapping, from each block-key to the permutation slot
         # the block occupies.
         self.block_slot_keys = np.empty(netlist.block_count, dtype=np.uint32)
+        #self.block_slot_keys[netlist.global_blocks] =
         self.block_slot_moves = np.empty(netlist.block_count, dtype=np.int32)
         self.block_slot_keys_prime = np.empty_like(self.block_slot_keys)
         self._sync_slot_block_keys_to_block_slot_keys()
@@ -240,14 +211,40 @@ class CAMIP(object):
         self.X = netlist.C._with_data(np.empty_like(netlist.C.data,
                                                     dtype=np.float32),
                                       copy=False)
+
+        self._e_x = np.empty(self.X.shape[1], dtype=np.float32)
+        self._e_x2 = np.empty_like(self._e_x)
+        self._e_y = np.empty_like(self._e_x)
+        self._e_y2 = np.empty_like(self._e_x)
+        self._e_c = np.empty_like(self._e_x)
+
         self.omega = netlist.C._with_data(np.empty_like(netlist.C.data,
                                                         dtype=np.float32),
                                           copy=False)
-        self.omega_prime = netlist.C._with_data(np.empty_like(netlist.C.data,
-                                                              dtype=np
-                                                              .float32),
-                                                copy=False)
-        self.r_inv = np.reciprocal(netlist.r.astype(np.float32))
+        self.omega_prime = netlist.C._with_data(np.ones_like(netlist.C.data,
+                                                             dtype=np
+                                                             .float32),
+                                                copy=True)
+        self._block_keys = np.empty_like(netlist.C.row)
+        self.net_count = sum_float_by_key(self.omega_prime.col,
+                                          self.omega_prime.data,
+                                          self._block_keys,
+                                          self.omega_prime.data)
+        sort_netlist_keys(self.omega_prime.row, self.omega_prime.col)
+
+        self.e_x = self._e_x[:self.net_count]
+        self.e_x2 = self._e_x2[:self.net_count]
+        self.e_y = self._e_y[:self.net_count]
+        self.e_y2 = self._e_y2[:self.net_count]
+        self.e_c = self._e_c[:self.net_count]
+
+        self.n_c_prime = self.omega_prime.data[:netlist.block_count,
+                                               np.newaxis]
+        self.r_inv = np.reciprocal(netlist.r.A.ravel().astype(np.float32))
+        self.block_group_keys = np.empty(netlist.block_count, dtype=np.int32)
+        self._delta_s = np.empty(netlist.block_count, dtype=np.float32)
+        self._n_c = np.empty_like(netlist.C.row, dtype=np.float32)
+        self.n_c = self._n_c[:netlist.block_count]
 
     def shuffle_placement(self):
         '''
@@ -256,8 +253,8 @@ class CAMIP(object):
         The shuffle is aware of IO and logic slots in the placement, and will
         keep IO and logic within the corresponding areas of the permutation.
         '''
-        np.random.shuffle(self.slot_block_keys[:self.s2p.slot_count.io])
-        np.random.shuffle(self.slot_block_keys[self.s2p.slot_count.io:])
+        np.random.shuffle(self.slot_block_keys[:self.s2p.io_slot_count])
+        np.random.shuffle(self.slot_block_keys[self.s2p.io_slot_count:])
         self._sync_slot_block_keys_to_block_slot_keys()
 
     def _sync_block_slot_keys_to_slot_block_keys(self):
@@ -279,6 +276,7 @@ class CAMIP(object):
         self.block_slot_keys[self.slot_block_keys[occupied]] = occupied[0]
         del occupied
 
+    @profile
     def evaluate_placement(self):
         '''
         Compute the cost of:
@@ -290,29 +288,35 @@ class CAMIP(object):
         # permutation slot assignments.
         extract_positions(self.p_x, self.p_y, self.block_slot_keys, self.s2p)
 
+        # TODO: Try using permutation iterators here rather than actually
+        # copying the data.  This might help to improve the performance by
+        # fusing the memory accesses with the calculations in the
+        # `sum_xy_vectors` function.
         self.X.data[:] = self.p_x[self.X.row]
         self.Y.data[:] = self.p_y[self.Y.row]
 
         # Star+ vectors
-        self.e_x = self.X.sum(axis=0)
-        self.e_x2 = self.X.multiply(self.X).sum(axis=0)
-        self.e_y = self.Y.sum(axis=0)
-        self.e_y2 = self.Y.multiply(self.Y).sum(axis=0)
-        self.e_c = 1.59 * (np.sqrt(self.e_x2.A - np.square(self.e_x.A) *
-                                   self.r_inv.A + 1) +
-                           np.sqrt(self.e_y2.A - np.square(self.e_y.A) *
-                                   self.r_inv.A + 1))
+        sum_xy_vectors(self.X.col, self.X.data, self.Y.data, self._e_x,
+                       self._e_x2, self._e_y, self._e_y2, self._block_keys)
+        self.e_c[:] = 1.59 * (np.sqrt(self.e_x2 - np.square(self.e_x) *
+                                      self.r_inv + 1) +
+                              np.sqrt(self.e_y2 - np.square(self.e_y) *
+                                      self.r_inv + 1))
 
         # `theta`: $\theta =$ total placement cost
         self.theta = self.e_c.sum()
 
         # `omega`: $\Omega \in \mathbb{M}_{mn}$, $\omega_{ij} = e_cj$.
-        self.omega.data[:] = map(self.e_c.ravel().__getitem__,
-                                 self.netlist.C.col)
+        copy_e_c_to_omega(self.e_c.ravel(), self.omega_prime.col,
+                          self.omega.data)
+        #self.omega.data[:] = map(self.e_c.ravel().__getitem__,
+                                 #self.netlist.C.col)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
-        self.n_c = self.omega.sum(axis=1)
+        #self.n_c = self.omega.sum(axis=1)
+        N = sum_float_by_key(self.omega_prime.row, self.omega.data,
+                             self._block_keys, self._n_c)
         return self.theta
 
     @profile
@@ -337,50 +341,49 @@ class CAMIP(object):
         # three orders of magnitude)_.
         evaluate_moves(self.omega_prime.data, self.omega_prime.row,
                        self.omega_prime.col,
-                       self.p_x, self.p_x_prime, self.e_x.A.ravel(),
-                       self.e_x2.A.ravel(),
-                       self.p_y, self.p_y_prime, self.e_y.A.ravel(),
-                       self.e_y2.A.ravel(),
-                       self.r_inv.A.ravel(), 1.59)
+                       self.p_x, self.p_x_prime, self.e_x, self.e_x2,
+                       self.p_y, self.p_y_prime, self.e_y, self.e_y2,
+                       self.r_inv, 1.59)
 
-        self.n_c_prime = self.omega_prime.sum(axis=1)
-        self.delta_n = self.n_c_prime - self.n_c
+        sum_float_by_key(self.omega_prime.row, self.omega_prime.data,
+                         self._block_keys, self.omega_prime.data)
+        self.delta_n = self.n_c_prime.ravel() - self.n_c
+        pass
 
+    @profile
     def assess_groups(self, temperature):
-        total_slot_count = len(self.s2p)
-        self.block_group_keys = np.fromiter((min(k1, k2) if k1 != k2 else
-                                             total_slot_count
-                                             for k1, k2 in
-                                             itertools
-                                             .izip(self.block_slot_keys,
-                                                   self
-                                                   .block_slot_keys_prime)),
-                                            dtype=np.int32)
+        compute_block_group_keys(self.block_slot_keys,
+                                 self.block_slot_keys_prime,
+                                 self.block_group_keys,
+                                 self.s2p.total_slot_count)
         moved_mask = (self.block_slot_keys != self.block_slot_keys_prime)
         unmoved_count = moved_mask.size - moved_mask.sum()
 
-        group_block_keys = np.argsort(self.block_group_keys)[:-unmoved_count]
+        _group_block_keys = np.arange(self.block_group_keys.size,
+                                      dtype=self.block_group_keys.dtype)
+        sort_netlist_keys(self.block_group_keys.copy(), _group_block_keys)
+        group_block_keys = _group_block_keys[:-unmoved_count]
         if len(group_block_keys) == 0:
-            self.delta_s = np.empty(0)
+            self.delta_s = self._delta_s[:0]
             return 0, np.empty(0)
-        packed_group_segments = np.empty_like(group_block_keys)
+        packed_group_segments = np.empty_like(group_block_keys, dtype='int32')
         packed_group_segments[0] = 1
         packed_group_segments[1:] = (self.block_group_keys
                                      [group_block_keys][1:] !=
                                      self.block_group_keys
                                      [group_block_keys][:-1])
-        packed_block_group_keys = np.cumsum(packed_group_segments) - 1
+        packed_block_group_keys = np.cumsum(packed_group_segments,
+                                            dtype='int32') - 1
 
-        self.S = sparse.coo_matrix((self.delta_n[group_block_keys].A.ravel(),
-                                    (group_block_keys,
-                                     packed_block_group_keys)))
-
-        self.delta_s = self.S.sum(axis=0).A.ravel()
+        N = sum_float_by_key(packed_block_group_keys,
+                             self.delta_n[group_block_keys].copy(),
+                             self._block_keys, self._delta_s)
+        self.delta_s = self._delta_s[:N]
 
         assess_urands = np.random.rand(len(self.delta_s))
         a = ((self.delta_s <= 0) | (assess_urands < np.exp(-self.delta_s /
                                                            temperature)))
-        rejected_block_keys = self.S.row[~a[packed_block_group_keys]]
+        rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
         return (moved_mask.size - unmoved_count), rejected_block_keys
 
     def apply_groups(self, rejected_move_block_keys):
