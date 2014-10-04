@@ -283,13 +283,12 @@ cpdef sum_float_by_key(int32_t[:] keys, float[:] values,
     return count
 
 
-cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
-                     int32_t[:] p_x, int32_t[:] p_x_prime,
-                     float[:] e_x, float[:] e_x_2,
-                     int32_t[:] p_y, int32_t[:] p_y_prime,
-                     float[:] e_y, float[:] e_y_2,
-                     float[:] r_inv, float beta):
-    cdef size_t count = len(output)
+cpdef evaluate_moves(int32_t[:] row, int32_t[:] col, int32_t[:] p_x,
+                     int32_t[:] p_x_prime, float[:] e_x, float[:] e_x_2,
+                     int32_t[:] p_y, int32_t[:] p_y_prime, float[:] e_y,
+                     float[:] e_y_2, float[:] r_inv, float beta,
+                     int32_t[:] reduced_keys, float[:] reduced_values):
+    cdef size_t count = <size_t>reduced_values.size
     cdef int k
     cdef int i
     cdef int j
@@ -301,7 +300,8 @@ cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
     cdef unpack_quinary_args[evaluate_move] *eval_func_tuple = \
         new unpack_quinary_args[evaluate_move](deref(eval_func))
 
-    copy_n(
+    accumulate_by_key(
+        &row[0], &row[0] + count,
         make_transform_iterator(
             make_zip_iterator(
                 make_tuple2(
@@ -322,8 +322,8 @@ cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
                                 make_permutation_iterator(&p_x[0], &row[0]),
                                 make_permutation_iterator(&p_x_prime[0], &row[0]),
                                 make_permutation_iterator(&r_inv[0], &col[0]))),
-                        deref(eval_func_tuple)))), deref(plus2_tuple)), count,
-        &output[0])
+                        deref(eval_func_tuple)))), deref(plus2_tuple)),
+        &reduced_keys[0], &reduced_values[0])
 
 
 cdef class cAnnealSchedule:

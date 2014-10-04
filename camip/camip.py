@@ -327,18 +327,14 @@ class CAMIP(object):
     def evaluate_moves(self):
         # __NB__ Use Cython function _(improves run-time performance by almost
         # three orders of magnitude)_.
-        evaluate_moves(self.omega_prime.data, self.omega_prime.row,
+        evaluate_moves(self.omega_prime.row,
                        self.omega_prime.col,
                        self.p_x, self.p_x_prime, self.e_x, self.e_x2,
                        self.p_y, self.p_y_prime, self.e_y, self.e_y2,
-                       self.r_inv, 1.59)
+                       self.r_inv, 1.59, self._block_keys,
+                       self.omega_prime.data)
 
-        # TODO: Fuse `evaluate_moves` with `sum_float_by_key` to
-        # _(potentially)_ improve performance.
-        sum_float_by_key(self.omega_prime.row, self.omega_prime.data,
-                         self._block_keys, self.omega_prime.data)
         self.delta_n = self.n_c_prime.ravel() - self.n_c
-        pass
 
     @profile
     def assess_groups(self, temperature):
