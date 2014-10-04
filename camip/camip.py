@@ -300,13 +300,11 @@ class CAMIP(object):
         self.theta = star_plus_2d(self.e_x, self.e_x2, self.e_y, self.e_y2,
                                   self.r_inv, self.e_c)
 
-        # `omega`: $\Omega \in \mathbb{M}_{mn}$, $\omega_{ij} = e_cj$.
-        copy_e_c_to_omega(self.e_c.ravel(), self.omega.col, self.omega.data)
-
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
-        N = sum_float_by_key(self.omega.row, self.omega.data, self._block_keys,
-                             self._n_c)
+        N = sum_permuted_float_by_key(self.omega.row, self.e_c.ravel(),
+                                      self.omega.col, self._block_keys,
+                                      self._n_c)
         return self.theta
 
     @profile
