@@ -39,7 +39,8 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     random_vpr_pattern, slot_moves, extract_positions,
                     cAnnealSchedule, get_std_dev, sort_netlist_keys,
                     sum_float_by_key, copy_e_c_to_omega, sum_xy_vectors,
-                    compute_block_group_keys, compute_move_deltas)
+                    compute_block_group_keys, compute_move_deltas,
+                    sum_permuted_float_by_key)
 
 try:
     profile
@@ -362,9 +363,9 @@ class CAMIP(object):
         packed_block_group_keys = np.cumsum(packed_group_segments,
                                             dtype='int32') - 1
 
-        N = sum_float_by_key(packed_block_group_keys,
-                             self.delta_n[group_block_keys].copy(),
-                             self._block_keys, self._delta_s)
+        N = sum_permuted_float_by_key(packed_block_group_keys, self.delta_n,
+                                      group_block_keys, self._block_keys,
+                                      self._delta_s)
         self.delta_s = self._delta_s[:N]
 
         assess_urands = np.random.rand(len(self.delta_s))

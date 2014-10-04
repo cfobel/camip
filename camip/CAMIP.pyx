@@ -515,3 +515,13 @@ def compute_move_deltas(float[:] n_c, float[:] n_c_prime, float[:] delta_n):
 
     transform2(&n_c[0], &n_c[0] + count, &n_c_prime[0], &delta_n[0],
                minus_func)
+
+
+cpdef sum_permuted_float_by_key(int32_t[:] keys, float[:] elements,
+                                int32_t[:] index, int32_t[:] reduced_keys,
+                                float[:] reduced_values):
+    cdef size_t count = <int32_t*>accumulate_by_key(
+        &keys[0], &keys[0] + <size_t>keys.size,
+        make_permutation_iterator(&elements[0], &index[0]),
+        &reduced_keys[0], &reduced_values[0]).first - &reduced_keys[0]
+    return count
