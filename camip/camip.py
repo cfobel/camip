@@ -298,7 +298,7 @@ class CAMIP(object):
 
         # `theta`: $\theta =$ total placement cost
         self.theta = star_plus_2d(self.e_x, self.e_x2, self.e_y, self.e_y2,
-                                  self.r_inv, self.e_c)
+                                  self.r_inv, 1.59, self.e_c)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.

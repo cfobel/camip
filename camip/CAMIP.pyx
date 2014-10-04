@@ -100,7 +100,7 @@ cdef extern from "CAMIP.hpp" nogil:
         block_group_key(T)
 
     cdef cppclass c_star_plus_2d 'star_plus_2d' [T]:
-        pass
+        c_star_plus_2d(float)
 
 
 cdef class VPRMovePattern:
@@ -531,12 +531,12 @@ cpdef sum_permuted_float_by_key(int32_t[:] keys, float[:] elements,
 
 
 cpdef star_plus_2d(float[:] e_x, float[:] e_x2, float[:] e_y, float[:] e_y2,
-                   float[:] r_inv, float[:] e_c):
+                   float[:] r_inv, float beta, float[:] e_c):
     cdef size_t count = e_x.size
 
-    cdef c_star_plus_2d[float] _star_plus
+    cdef c_star_plus_2d[float] *_star_plus = new c_star_plus_2d[float](beta)
     cdef unpack_quinary_args[c_star_plus_2d[float]] *_star_plus_2d = \
-        new unpack_quinary_args[c_star_plus_2d[float]](_star_plus)
+        new unpack_quinary_args[c_star_plus_2d[float]](deref(_star_plus))
 
     copy_n(
         make_transform_iterator(
