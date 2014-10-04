@@ -40,7 +40,7 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     cAnnealSchedule, get_std_dev, sort_netlist_keys,
                     sum_float_by_key, copy_e_c_to_omega, sum_xy_vectors,
                     compute_block_group_keys, compute_move_deltas,
-                    sum_permuted_float_by_key)
+                    sum_permuted_float_by_key, star_plus_2d)
 
 try:
     profile
@@ -231,7 +231,9 @@ class CAMIP(object):
                                           self.omega_prime.data,
                                           self._block_keys,
                                           self.omega_prime.data)
-        sort_netlist_keys(self.omega_prime.row, self.omega_prime.col)
+        sort_netlist_keys(self.omega.row, self.omega.col)
+        self.omega_prime.row[:] = self.omega.row
+        self.omega_prime.col[:] = self.omega.col
 
         self.e_x = self._e_x[:self.net_count]
         self.e_x2 = self._e_x2[:self.net_count]
@@ -293,22 +295,18 @@ class CAMIP(object):
         # Star+ vectors
         sum_xy_vectors(self.X.row, self.X.col, self.p_x, self.p_y, self._e_x,
                        self._e_x2, self._e_y, self._e_y2, self._block_keys)
-        self.e_c[:] = 1.59 * (np.sqrt(self.e_x2 - np.square(self.e_x) *
-                                      self.r_inv + 1) +
-                              np.sqrt(self.e_y2 - np.square(self.e_y) *
-                                      self.r_inv + 1))
 
         # `theta`: $\theta =$ total placement cost
-        self.theta = self.e_c.sum()
+        self.theta = star_plus_2d(self.e_x, self.e_x2, self.e_y, self.e_y2,
+                                  self.r_inv, self.e_c)
 
         # `omega`: $\Omega \in \mathbb{M}_{mn}$, $\omega_{ij} = e_cj$.
-        copy_e_c_to_omega(self.e_c.ravel(), self.omega_prime.col,
-                          self.omega.data)
+        copy_e_c_to_omega(self.e_c.ravel(), self.omega.col, self.omega.data)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
-        N = sum_float_by_key(self.omega_prime.row, self.omega.data,
-                             self._block_keys, self._n_c)
+        N = sum_float_by_key(self.omega.row, self.omega.data, self._block_keys,
+                             self._n_c)
         return self.theta
 
     @profile

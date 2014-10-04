@@ -7,7 +7,7 @@ import numpy as np
 cimport numpy as np
 from cythrust.thrust.pair cimport pair, make_pair
 from cythrust.thrust.sort cimport sort_by_key
-from cythrust.thrust.reduce cimport accumulate_by_key, reduce_by_key
+from cythrust.thrust.reduce cimport accumulate, accumulate_by_key, reduce_by_key
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
 from cythrust.thrust.copy cimport copy_n
 from cythrust.thrust.transform cimport transform, transform2
@@ -98,6 +98,9 @@ cdef extern from "CAMIP.hpp" nogil:
 
     cdef cppclass block_group_key[T]:
         block_group_key(T)
+
+    cdef cppclass c_star_plus_2d 'star_plus_2d' [T]:
+        pass
 
 
 cdef class VPRMovePattern:
@@ -525,3 +528,19 @@ cpdef sum_permuted_float_by_key(int32_t[:] keys, float[:] elements,
         make_permutation_iterator(&elements[0], &index[0]),
         &reduced_keys[0], &reduced_values[0]).first - &reduced_keys[0]
     return count
+
+
+cpdef star_plus_2d(float[:] e_x, float[:] e_x2, float[:] e_y, float[:] e_y2,
+                   float[:] r_inv, float[:] e_c):
+    cdef size_t count = e_x.size
+
+    cdef c_star_plus_2d[float] _star_plus
+    cdef unpack_quinary_args[c_star_plus_2d[float]] *_star_plus_2d = \
+        new unpack_quinary_args[c_star_plus_2d[float]](_star_plus)
+
+    copy_n(
+        make_transform_iterator(
+            make_zip_iterator(
+                make_tuple5(&e_x[0], &e_x2[0], &e_y[0], &e_y2[0], &r_inv[0])),
+            deref(_star_plus_2d)), count, &e_c[0])
+    return <float>accumulate(&e_c[0], &e_c[0] + count)

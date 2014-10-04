@@ -373,4 +373,15 @@ struct block_group_key {
   }
 };
 
+
+template <typename T>
+struct star_plus_2d {
+  typedef T result_type;
+
+  result_type operator() (T e_x, T e_x2, T e_y, T e_y2, T r_inv) {
+      return 1.59 * (sqrt(e_x2 - e_x * e_x * r_inv + 1) +
+                     sqrt(e_y2 - e_y * e_y * r_inv + 1));
+  }
+};
+
 #endif  // #ifndef ___CAMIP__HPP___
