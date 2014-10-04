@@ -482,17 +482,16 @@ cpdef slot_moves(uint32_t[:] slot_keys, uint32_t[:] slot_keys_prime,
                &slot_keys_prime[0], plus2_func)
 
 
-cpdef extract_positions(int32_t[:] p_x, int32_t[:] p_y, uint32_t[:] slot_keys,
+cpdef extract_positions(uint32_t[:] slot_keys, int32_t[:] p_x, int32_t[:] p_y,
                         VPRAutoSlotKeyTo2dPosition s2p):
-    # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on permutation
-    # slot assignments.
-    cdef int i
-    cdef pair[int32_t, int32_t] position
-
-    for i in xrange(len(slot_keys)):
-        position = deref(s2p._data)(slot_keys[i])
-        p_x[i] = <int32_t>position.first
-        p_y[i] = <int32_t>position.second
+    r'''
+    Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on permutation
+    slot assignments.
+    '''
+    cdef size_t count = slot_keys.size
+    transform(&slot_keys[0], &slot_keys[0] + count,
+              make_zip_iterator(make_tuple2(&p_x[0], &p_y[0])),
+              deref(s2p._data))
 
 
 def get_std_dev(int n, double sum_x_squared, double av_x):

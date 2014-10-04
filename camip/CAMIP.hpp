@@ -131,8 +131,9 @@ public:
 
 
 template <typename Pair>
-class VPRAutoSlotKeyTo2dPosition {
-public:
+struct VPRAutoSlotKeyTo2dPosition {
+  typedef Pair result_type;
+
   int io_count;
   int logic_count;
   int io_capacity;

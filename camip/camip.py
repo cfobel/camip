@@ -290,7 +290,7 @@ class CAMIP(object):
         '''
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments.
-        extract_positions(self.p_x, self.p_y, self.block_slot_keys, self.s2p)
+        extract_positions(self.block_slot_keys, self.p_x, self.p_y, self.s2p)
 
         # Star+ vectors
         sum_xy_vectors(self.X.row, self.X.col, self.p_x, self.p_y, self._e_x,
@@ -318,8 +318,8 @@ class CAMIP(object):
 
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments.
-        extract_positions(self.p_x_prime, self.p_y_prime,
-                          self.block_slot_keys_prime, self.s2p)
+        extract_positions(self.block_slot_keys_prime, self.p_x_prime,
+                          self.p_y_prime, self.s2p)
 
     @profile
     def evaluate_moves(self):
