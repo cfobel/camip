@@ -315,10 +315,8 @@ class CAMIP(object):
         self.move_pattern = random_vpr_pattern(self.s2p,
                                                max_io_move=max_io_move,
                                                max_logic_move=max_logic_move)
-        slot_moves(self.block_slot_moves, self.block_slot_keys,
+        slot_moves(self.block_slot_keys, self.block_slot_keys_prime,
                    self.move_pattern)
-        self.block_slot_keys_prime[:] = (self.block_slot_keys +
-                                         self.block_slot_moves)
 
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments.

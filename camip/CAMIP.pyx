@@ -468,12 +468,15 @@ def random_vpr_pattern(VPRAutoSlotKeyTo2dPosition vpr_s2p, max_logic_move=None,
                            <int32_t>logic_params.shift.second), vpr_s2p)
 
 
-cpdef slot_moves(int32_t[:] output, uint32_t[:] slot_keys,
+cpdef slot_moves(uint32_t[:] slot_keys, uint32_t[:] slot_keys_prime,
                  VPRMovePattern move_pattern):
     cdef size_t count = <size_t>slot_keys.size
+    cdef plus[uint32_t] plus2_func
 
-    transform(&slot_keys[0], &slot_keys[0] + count, &output[0],
-              deref(move_pattern._data))
+    transform2(&slot_keys[0], &slot_keys[0] + count,
+               make_transform_iterator(&slot_keys[0],
+                                       deref(move_pattern._data)),
+               &slot_keys_prime[0], plus2_func)
 
 
 cpdef extract_positions(int32_t[:] p_x, int32_t[:] p_y, uint32_t[:] slot_keys,
