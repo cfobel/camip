@@ -40,9 +40,9 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     cAnnealSchedule, get_std_dev, sort_netlist_keys,
                     sum_float_by_key, sum_xy_vectors, compute_block_group_keys,
                     minus_float, sum_permuted_float_by_key,
-                    star_plus_2d, match_count_uint32, sequence_int32,
-                    permuted_nonmatch_inclusive_scan_int32, rand_floats,
-                    copy_if_int32_permuted_stencil, assess_groups)
+                    star_plus_2d, equal_count_uint32, sequence_int32,
+                    permuted_nonmatch_inclusive_scan_int32, assess_groups,
+                    copy_permuted_uint32)
 
 try:
     profile
@@ -336,7 +336,7 @@ class CAMIP(object):
            Thrust [`transform`][1] operations _(i.e., [map of sequence][2])_.
 
         [1]: http://thrust.github.io/doc/group__transformations.html
-        [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049#s0110
+        [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
         '''
         # TODO: Use C++ random number generator.
         np.random.seed(seed)
@@ -374,7 +374,7 @@ class CAMIP(object):
         [1]: http://thrust.github.io/doc/group__reductions.html#ga633d78d4cb2650624ec354c9abd0c97f
         [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000037#s0175
         [3]: http://thrust.github.io/doc/group__transformations.html
-        [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049#s0110
+        [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
         '''
         # Thrust `reduce_by_key` over a `transform` iterator.
         evaluate_moves(self.omega_prime.row,
@@ -472,12 +472,12 @@ class CAMIP(object):
         '''
         if len(rejected_move_block_keys) == 0:
             return
-        # TODO: Implement using Thrust [START]
-        self.block_slot_keys_prime[rejected_move_block_keys] = (
-            self.block_slot_keys[rejected_move_block_keys])
+
+        # Thrust `transform`.
+        copy_permuted_uint32(self.block_slot_keys, self.block_slot_keys_prime,
+                             rejected_move_block_keys)
         self.block_slot_keys, self.block_slot_keys_prime = (
             self.block_slot_keys_prime, self.block_slot_keys)
-        # TODO: Implement using Thrust [END]
 
     @profile
     def run_iteration(self, seed, temperature, max_io_move=None,

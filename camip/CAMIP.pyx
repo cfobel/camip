@@ -643,3 +643,18 @@ def assess_groups(float temperature, int32_t[:] group_block_keys,
                     make_tuple2(&packed_block_group_keys[0], &delta_s[0])),
                 deref(unpack_assess_group)), &packed_block_group_keys[0]),
         &output[0], _logical_not) - &output[0])
+
+
+def copy_permuted_uint32(uint32_t[:] a, uint32_t[:] b, int32_t[:] index):
+    '''
+    Equivalent to:
+
+        b[index] = a[index]
+
+    where index is an array of indexes corresponding to positions to copy from
+    `a` to `b`.
+    '''
+    cdef size_t count = index.size
+
+    copy_n(make_permutation_iterator(&a[0], &index[0]), count,
+           make_permutation_iterator(&b[0], &index[0]))
