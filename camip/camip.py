@@ -38,8 +38,11 @@ from cyplace_experiments.data import open_netlists_h5f
 from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     random_vpr_pattern, slot_moves, extract_positions,
                     cAnnealSchedule, get_std_dev, sort_netlist_keys,
-                    sum_float_by_key, copy_e_c_to_omega, sum_xy_vectors,
-                    compute_block_group_keys)
+                    sum_float_by_key, sum_xy_vectors, compute_block_group_keys,
+                    minus_float, sum_permuted_float_by_key,
+                    star_plus_2d, match_count_uint32, sequence_int32,
+                    permuted_nonmatch_inclusive_scan_int32, rand_floats,
+                    copy_if_int32_permuted_stencil)
 
 try:
     profile
@@ -105,6 +108,7 @@ class VPRSchedule(object):
             print (self.anneal_schedule.temperature, self.anneal_schedule.rlim,
                    self.anneal_schedule.success_ratio)
         end = time.time()
+        placer.finalize()
         print 'Runtime: %.2fs' % (end - start)
         return costs
 
@@ -195,7 +199,6 @@ class CAMIP(object):
         # Create reverse-mapping, from each block-key to the permutation slot
         # the block occupies.
         self.block_slot_keys = np.empty(netlist.block_count, dtype=np.uint32)
-        #self.block_slot_keys[netlist.global_blocks] =
         self.block_slot_moves = np.empty(netlist.block_count, dtype=np.int32)
         self.block_slot_keys_prime = np.empty_like(self.block_slot_keys)
         self._sync_slot_block_keys_to_block_slot_keys()
@@ -230,7 +233,9 @@ class CAMIP(object):
                                           self.omega_prime.data,
                                           self._block_keys,
                                           self.omega_prime.data)
-        sort_netlist_keys(self.omega_prime.row, self.omega_prime.col)
+        sort_netlist_keys(self.omega.row, self.omega.col)
+        self.omega_prime.row[:] = self.omega.row
+        self.omega_prime.col[:] = self.omega.col
 
         self.e_x = self._e_x[:self.net_count]
         self.e_x2 = self._e_x2[:self.net_count]
@@ -242,9 +247,15 @@ class CAMIP(object):
                                                np.newaxis]
         self.r_inv = np.reciprocal(netlist.r.A.ravel().astype(np.float32))
         self.block_group_keys = np.empty(netlist.block_count, dtype=np.int32)
+        self._group_block_keys = np.empty(self.block_group_keys.size,
+                                          dtype=self.block_group_keys.dtype)
         self._delta_s = np.empty(netlist.block_count, dtype=np.float32)
         self._n_c = np.empty_like(netlist.C.row, dtype=np.float32)
         self.n_c = self._n_c[:netlist.block_count]
+        self.delta_n = np.empty(netlist.block_count, dtype=np.float32)
+        self._packed_block_group_keys = np.empty_like(self._group_block_keys)
+        self._assess_urands = np.empty_like(self._delta_s)
+        self._rejected_block_keys = np.empty_like(self.block_group_keys)
 
     def shuffle_placement(self):
         '''
@@ -286,114 +297,194 @@ class CAMIP(object):
         '''
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments.
-        extract_positions(self.p_x, self.p_y, self.block_slot_keys, self.s2p)
-
-        # TODO: Try using permutation iterators here rather than actually
-        # copying the data.  This might help to improve the performance by
-        # fusing the memory accesses with the calculations in the
-        # `sum_xy_vectors` function.
-        self.X.data[:] = self.p_x[self.X.row]
-        self.Y.data[:] = self.p_y[self.Y.row]
+        # Thrust `transform`.
+        extract_positions(self.block_slot_keys, self.p_x, self.p_y, self.s2p)
 
         # Star+ vectors
-        sum_xy_vectors(self.X.col, self.X.data, self.Y.data, self._e_x,
+        # Thrust `reduce_by_key`.
+        sum_xy_vectors(self.X.row, self.X.col, self.p_x, self.p_y, self._e_x,
                        self._e_x2, self._e_y, self._e_y2, self._block_keys)
-        self.e_c[:] = 1.59 * (np.sqrt(self.e_x2 - np.square(self.e_x) *
-                                      self.r_inv + 1) +
-                              np.sqrt(self.e_y2 - np.square(self.e_y) *
-                                      self.r_inv + 1))
 
         # `theta`: $\theta =$ total placement cost
-        self.theta = self.e_c.sum()
-
-        # `omega`: $\Omega \in \mathbb{M}_{mn}$, $\omega_{ij} = e_cj$.
-        copy_e_c_to_omega(self.e_c.ravel(), self.omega_prime.col,
-                          self.omega.data)
-        #self.omega.data[:] = map(self.e_c.ravel().__getitem__,
-                                 #self.netlist.C.col)
+        # Thrust `transform`.
+        self.theta = star_plus_2d(self.e_x, self.e_x2, self.e_y, self.e_y2,
+                                  self.r_inv, 1.59, self.e_c)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
-        #self.n_c = self.omega.sum(axis=1)
-        N = sum_float_by_key(self.omega_prime.row, self.omega.data,
-                             self._block_keys, self._n_c)
+        # Thrust `reduce_by_key`.
+        N = sum_permuted_float_by_key(self.omega.row, self.e_c.ravel(),
+                                      self.omega.col, self._block_keys,
+                                      self._n_c)
         return self.theta
 
     @profile
     def propose_moves(self, seed, max_io_move=None, max_logic_move=None):
+        '''
+        Based on the provided seed:
+            - Generate a random move pattern _(constant time)_.
+            - Compute the new permutation slot for each block in the placement,
+              based on the generated moves pattern.
+            - Compute the `(x, y)` corresponding to the proposed slot for each
+              block.
+
+
+        Notes
+        =====
+
+         - All operations that are not constant-time are implemented using
+           Thrust [`transform`][1] operations _(i.e., [map of sequence][2])_.
+
+        [1]: http://thrust.github.io/doc/group__transformations.html
+        [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049#s0110
+        '''
+        # TODO: Use C++ random number generator.
         np.random.seed(seed)
+        # TODO: Implement pure C++ random VPR pattern generator.
         self.move_pattern = random_vpr_pattern(self.s2p,
                                                max_io_move=max_io_move,
                                                max_logic_move=max_logic_move)
-        slot_moves(self.block_slot_moves, self.block_slot_keys,
+        # Thrust `transform`.
+        slot_moves(self.block_slot_keys, self.block_slot_keys_prime,
                    self.move_pattern)
-        self.block_slot_keys_prime[:] = (self.block_slot_keys +
-                                         self.block_slot_moves)
 
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
-        # permutation slot assignments.
-        extract_positions(self.p_x_prime, self.p_y_prime,
-                          self.block_slot_keys_prime, self.s2p)
+        # permutation slot assignments, using Thrust `transform`.
+        extract_positions(self.block_slot_keys_prime, self.p_x_prime,
+                          self.p_y_prime, self.s2p)
 
     @profile
     def evaluate_moves(self):
-        # __NB__ Use Cython function _(improves run-time performance by almost
-        # three orders of magnitude)_.
-        evaluate_moves(self.omega_prime.data, self.omega_prime.row,
+        '''
+         - Compute the total cost per block, based on the current set of
+           proposed moves.
+         - For each block, compute the difference in cost between the current
+           position and the newly proposed position.
+
+
+        Notes
+        =====
+
+         - All operations are implemented using one of the following Thrust
+           operations:
+
+          - [`reduce_by_key`][1] _(i.e., [category reduction][2])_.
+          - [`transform`][3] _(i.e., [map of sequence][4])_.
+
+        [1]: http://thrust.github.io/doc/group__reductions.html#ga633d78d4cb2650624ec354c9abd0c97f
+        [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000037#s0175
+        [3]: http://thrust.github.io/doc/group__transformations.html
+        [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049#s0110
+        '''
+        # Thrust `reduce_by_key` over a `transform` iterator.
+        evaluate_moves(self.omega_prime.row,
                        self.omega_prime.col,
                        self.p_x, self.p_x_prime, self.e_x, self.e_x2,
                        self.p_y, self.p_y_prime, self.e_y, self.e_y2,
-                       self.r_inv, 1.59)
+                       self.r_inv, 1.59, self._block_keys,
+                       self.omega_prime.data)
 
-        sum_float_by_key(self.omega_prime.row, self.omega_prime.data,
-                         self._block_keys, self.omega_prime.data)
-        self.delta_n = self.n_c_prime.ravel() - self.n_c
-        pass
+        # Compute move-deltas using a Thrust `reduce_by_key` call over a
+        # `transform` iterator.
+        minus_float(self.n_c_prime.ravel(), self.n_c, self.delta_n)
 
     @profile
     def assess_groups(self, temperature):
+        '''
+         - For each block, compute the key of the group of
+           concurrent-associated moves the block belongs to.
+          - For a swap, which corresponds to a group of two
+            concurrent-associated moves, the group key is equal to the minimum
+            corresponding permutation slot key.
+         - For each group of concurrent-associated moves, compute the
+           difference in cost due to applying all moves in the group.
+         - For each group of concurrent-associated moves, assess if _all_ moves
+           in the group should be _accepted_ or _rejected_.
+
+        Notes
+        =====
+
+         - _Most_ operations are implemented using one of the following Thrust
+           operations:
+
+          - [`reduce_by_key`][1] _(i.e., [category reduction][2])_.
+          - [`transform`][3] _(i.e., [map of sequence][4])_.
+
+        TODO
+        ====
+
+         - Implement the serial sections marked below using Thrust to enable
+           concurrency/parallelism.
+
+        [1]: http://thrust.github.io/doc/group__reductions.html#ga633d78d4cb2650624ec354c9abd0c97f
+        [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000037#s0175
+        [3]: http://thrust.github.io/doc/group__transformations.html
+        [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049#s0110
+        '''
+        # Thrust `transform`.
         compute_block_group_keys(self.block_slot_keys,
                                  self.block_slot_keys_prime,
                                  self.block_group_keys,
                                  self.s2p.total_slot_count)
-        moved_mask = (self.block_slot_keys != self.block_slot_keys_prime)
-        unmoved_count = moved_mask.size - moved_mask.sum()
 
-        _group_block_keys = np.arange(self.block_group_keys.size,
-                                      dtype=self.block_group_keys.dtype)
-        sort_netlist_keys(self.block_group_keys.copy(), _group_block_keys)
-        group_block_keys = _group_block_keys[:-unmoved_count]
-        if len(group_block_keys) == 0:
+        unmoved_count = match_count_uint32(self.block_slot_keys,
+                                           self.block_slot_keys_prime)
+
+        # ## Packed block group keys ##
+        #
+        # Each block that has been assigned a non-zero move belongs to exactly
+        # one group of associated-moves.  For each group of associated-moves,
+        # there is a corresponding group key.  Given the index of a block in
+        # the list of blocks belonging to groups of associated moves,
+        sequence_int32(self._group_block_keys)
+
+        # Thrust `sort_by_key`.
+        sort_netlist_keys(self.block_group_keys.copy(), self._group_block_keys)
+
+        group_block_keys = self._group_block_keys[:-unmoved_count]
+        if group_block_keys.size == 0:
             self.delta_s = self._delta_s[:0]
             return 0, np.empty(0)
-        packed_group_segments = np.empty_like(group_block_keys, dtype='int32')
-        packed_group_segments[0] = 1
-        packed_group_segments[1:] = (self.block_group_keys
-                                     [group_block_keys][1:] !=
-                                     self.block_group_keys
-                                     [group_block_keys][:-1])
-        packed_block_group_keys = np.cumsum(packed_group_segments,
-                                            dtype='int32') - 1
+        packed_block_group_keys = (self._packed_block_group_keys
+                                   [:group_block_keys.size])
+        permuted_nonmatch_inclusive_scan_int32(self.block_group_keys,
+                                               group_block_keys,
+                                               packed_block_group_keys)
 
-        N = sum_float_by_key(packed_block_group_keys,
-                             self.delta_n[group_block_keys].copy(),
-                             self._block_keys, self._delta_s)
+        # Thrust `reduce_by_key` over a `permutation` iterator.
+        N = sum_permuted_float_by_key(packed_block_group_keys, self.delta_n,
+                                      group_block_keys, self._block_keys,
+                                      self._delta_s)
         self.delta_s = self._delta_s[:N]
 
-        assess_urands = np.random.rand(len(self.delta_s))
+        assess_urands = self._assess_urands[:self.delta_s.size]
+        # TODO: Implement using Thrust [START]
+        rand_floats(assess_urands)
         a = ((self.delta_s <= 0) | (assess_urands < np.exp(-self.delta_s /
                                                            temperature)))
-        rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
-        return (moved_mask.size - unmoved_count), rejected_block_keys
+        N = copy_if_int32_permuted_stencil(group_block_keys,
+                                           (~a).astype('uint8'),
+                                           packed_block_group_keys,
+                                           self._rejected_block_keys)
+        # TODO: Implement using Thrust [END]
+        rejected_block_keys = self._rejected_block_keys[:N]
 
+        #      (moves evaluated)                , (moves rejected)
+        return (self.block_slot_keys.size - unmoved_count), rejected_block_keys
+
+    @profile
     def apply_groups(self, rejected_move_block_keys):
+        '''
+         - Update placement according to accepted moves.
+        '''
         if len(rejected_move_block_keys) == 0:
             return
+        # TODO: Implement using Thrust [START]
         self.block_slot_keys_prime[rejected_move_block_keys] = (
             self.block_slot_keys[rejected_move_block_keys])
         self.block_slot_keys, self.block_slot_keys_prime = (
             self.block_slot_keys_prime, self.block_slot_keys)
-        self._sync_block_slot_keys_to_slot_block_keys()
+        # TODO: Implement using Thrust [END]
 
     @profile
     def run_iteration(self, seed, temperature, max_io_move=None,
@@ -405,6 +496,11 @@ class CAMIP(object):
         self.apply_groups(rejected_move_block_keys)
         self.evaluate_placement()
         return moved_count, rejected_move_block_keys
+
+    def finalize(self):
+        # Copy the final position of each block to the slot-to-block-key
+        # mapping.
+        self._sync_block_slot_keys_to_slot_block_keys()
 
 
 def main():

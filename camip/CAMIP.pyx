@@ -1,21 +1,26 @@
 #distutils: language=c++
 #cython: embedsignature=True, boundscheck=False
 from cython.operator cimport dereference as deref
-from libc.stdint cimport uint32_t, int32_t
+from libc.stdint cimport uint32_t, int32_t, uint8_t
 from libc.math cimport fmin
 import numpy as np
 cimport numpy as np
+from cythrust.random cimport SimpleRNG, ParkMillerRNGBase
+from cythrust.thrust.iterator.counting_iterator cimport counting_iterator
 from cythrust.thrust.pair cimport pair, make_pair
 from cythrust.thrust.sort cimport sort_by_key
-from cythrust.thrust.reduce cimport accumulate_by_key
+from cythrust.thrust.scan cimport exclusive_scan, inclusive_scan
+from cythrust.thrust.reduce cimport accumulate, accumulate_by_key, reduce_by_key
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
-from cythrust.thrust.copy cimport copy_n
+from cythrust.thrust.copy cimport copy_n, copy_if_w_stencil
+from cythrust.thrust.sequence cimport sequence
 from cythrust.thrust.transform cimport transform, transform2
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
 from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
-from cythrust.thrust.tuple cimport make_tuple5, make_tuple2
-from cythrust.thrust.functional cimport (unpack_binary_args, square,
-                                         unpack_quinary_args, plus)
+from cythrust.thrust.tuple cimport make_tuple5, make_tuple4, make_tuple2
+from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
+                                         not_equal_to, unpack_quinary_args,
+                                         plus, minus, reduce_plus4, identity)
 cimport cython
 
 cdef extern from "math.h" nogil:
@@ -97,6 +102,9 @@ cdef extern from "CAMIP.hpp" nogil:
 
     cdef cppclass block_group_key[T]:
         block_group_key(T)
+
+    cdef cppclass c_star_plus_2d 'star_plus_2d' [T]:
+        c_star_plus_2d(float)
 
 
 cdef class VPRMovePattern:
@@ -230,31 +238,30 @@ cdef extern from "schedule.hpp" nogil:
         void update_temperature()
 
 
-cpdef sum_xy_vectors(int32_t[:] net_keys, float[:] X, float[:] Y,
+cpdef sum_xy_vectors(int32_t[:] block_keys, int32_t[:] net_keys,
+                     int32_t[:] p_x, int32_t[:] p_y,
                      float[:] e_x, float[:] e_x2,
                      float[:] e_y, float[:] e_y2,
                      int32_t[:] reduced_keys):
     cdef size_t count = net_keys.size
     cdef square[float] square_f
+    cdef equal_to[int32_t] reduce_compare
+    cdef reduce_plus4[float] reduce_plus4
 
-    accumulate_by_key(
-        &net_keys[0], &net_keys[0] + count,
-        &X[0], &reduced_keys[0], &e_x[0])
-    accumulate_by_key(
-        &net_keys[0], &net_keys[0] + count,
-        make_transform_iterator(&X[0], square_f), &reduced_keys[0], &e_x2[0])
-    accumulate_by_key(
-        &net_keys[0], &net_keys[0] + count,
-        &Y[0], &reduced_keys[0], &e_y[0])
-    accumulate_by_key(
-        &net_keys[0], &net_keys[0] + count,
-        make_transform_iterator(&Y[0], square_f), &reduced_keys[0], &e_y2[0])
-
-
-cpdef copy_e_c_to_omega(float[:] e_c, int32_t[:] block_keys, float[:] omega):
-    copy_n(
-        make_permutation_iterator(&e_c[0], &block_keys[0]),
-        <size_t>block_keys.size, &omega[0])
+    reduce_by_key(
+        &net_keys[0],  # `keys_first`
+        &net_keys[0] + count,  # `keys_last`
+        make_zip_iterator(  # `values_first`
+            make_tuple4(
+                make_permutation_iterator(&p_x[0], &block_keys[0]),
+                make_transform_iterator(
+                    make_permutation_iterator(&p_x[0], &block_keys[0]), square_f),
+                make_permutation_iterator(&p_y[0], &block_keys[0]),
+                make_transform_iterator(
+                    make_permutation_iterator(&p_y[0], &block_keys[0]), square_f))),
+        &reduced_keys[0],  # `keys_output`
+        make_zip_iterator(make_tuple4(&e_x[0], &e_x2[0], &e_y[0], &e_y2[0])),
+        reduce_compare, reduce_plus4)
 
 
 cpdef sort_float_coo(int32_t[:] keys1, int32_t[:] keys2, float[:] values):
@@ -277,13 +284,12 @@ cpdef sum_float_by_key(int32_t[:] keys, float[:] values,
     return count
 
 
-cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
-                     int32_t[:] p_x, int32_t[:] p_x_prime,
-                     float[:] e_x, float[:] e_x_2,
-                     int32_t[:] p_y, int32_t[:] p_y_prime,
-                     float[:] e_y, float[:] e_y_2,
-                     float[:] r_inv, float beta):
-    cdef size_t count = len(output)
+cpdef evaluate_moves(int32_t[:] row, int32_t[:] col, int32_t[:] p_x,
+                     int32_t[:] p_x_prime, float[:] e_x, float[:] e_x_2,
+                     int32_t[:] p_y, int32_t[:] p_y_prime, float[:] e_y,
+                     float[:] e_y_2, float[:] r_inv, float beta,
+                     int32_t[:] reduced_keys, float[:] reduced_values):
+    cdef size_t count = <size_t>reduced_values.size
     cdef int k
     cdef int i
     cdef int j
@@ -295,7 +301,8 @@ cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
     cdef unpack_quinary_args[evaluate_move] *eval_func_tuple = \
         new unpack_quinary_args[evaluate_move](deref(eval_func))
 
-    copy_n(
+    accumulate_by_key(
+        &row[0], &row[0] + count,
         make_transform_iterator(
             make_zip_iterator(
                 make_tuple2(
@@ -316,16 +323,8 @@ cpdef evaluate_moves(float[:] output, int32_t[:] row, int32_t[:] col,
                                 make_permutation_iterator(&p_x[0], &row[0]),
                                 make_permutation_iterator(&p_x_prime[0], &row[0]),
                                 make_permutation_iterator(&r_inv[0], &col[0]))),
-                        deref(eval_func_tuple)))), deref(plus2_tuple)), count,
-        &output[0])
-
-    # for k in xrange(count):
-    #     i = row[k]
-    #     j = col[k]
-    #     output[k] = beta * (evaluate_move(i, j, p_x, p_x_prime, e_x, e_x_2,
-    #                                       r_inv) +
-    #                         evaluate_move(i, j, p_y, p_y_prime, e_y, e_y_2,
-    #                                       r_inv))
+                        deref(eval_func_tuple)))), deref(plus2_tuple)),
+        &reduced_keys[0], &reduced_values[0])
 
 
 cdef class cAnnealSchedule:
@@ -470,31 +469,27 @@ def random_vpr_pattern(VPRAutoSlotKeyTo2dPosition vpr_s2p, max_logic_move=None,
                            <int32_t>logic_params.shift.second), vpr_s2p)
 
 
-#     VPRMovePattern(params.magnitude.first, io_shift, logic_magnitude,
-#                   logic_shift,
-#                   slot_key_to_position):
-
-
-
-cpdef slot_moves(int32_t[:] output, uint32_t[:] slot_keys,
+cpdef slot_moves(uint32_t[:] slot_keys, uint32_t[:] slot_keys_prime,
                  VPRMovePattern move_pattern):
-    cdef int i
+    cdef size_t count = <size_t>slot_keys.size
+    cdef plus[uint32_t] plus2_func
 
-    for i in xrange(len(output)):
-        output[i] = move_pattern(slot_keys[i])
+    transform2(&slot_keys[0], &slot_keys[0] + count,
+               make_transform_iterator(&slot_keys[0],
+                                       deref(move_pattern._data)),
+               &slot_keys_prime[0], plus2_func)
 
 
-cpdef extract_positions(int32_t[:] p_x, int32_t[:] p_y, uint32_t[:] slot_keys,
+cpdef extract_positions(uint32_t[:] slot_keys, int32_t[:] p_x, int32_t[:] p_y,
                         VPRAutoSlotKeyTo2dPosition s2p):
-    # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on permutation
-    # slot assignments.
-    cdef int i
-    cdef pair[int32_t, int32_t] position
-
-    for i in xrange(len(slot_keys)):
-        position = deref(s2p._data)(slot_keys[i])
-        p_x[i] = <int32_t>position.first
-        p_y[i] = <int32_t>position.second
+    r'''
+    Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on permutation
+    slot assignments.
+    '''
+    cdef size_t count = slot_keys.size
+    transform(&slot_keys[0], &slot_keys[0] + count,
+              make_zip_iterator(make_tuple2(&p_x[0], &p_y[0])),
+              deref(s2p._data))
 
 
 def get_std_dev(int n, double sum_x_squared, double av_x):
@@ -512,3 +507,112 @@ def compute_block_group_keys(uint32_t[:] block_slot_keys,
     transform2(&block_slot_keys[0], &block_slot_keys[0] + count,
                &block_slot_keys_prime[0], &block_group_keys[0],
                deref(group_key_func))
+
+
+def minus_float(float[:] n_c, float[:] n_c_prime, float[:] delta_n):
+    cdef size_t count = n_c.size
+    cdef minus[float] minus_func
+
+    transform2(&n_c[0], &n_c[0] + count, &n_c_prime[0], &delta_n[0],
+               minus_func)
+
+
+cpdef sum_permuted_float_by_key(int32_t[:] keys, float[:] elements,
+                                int32_t[:] index, int32_t[:] reduced_keys,
+                                float[:] reduced_values):
+    cdef size_t count = <int32_t*>accumulate_by_key(
+        &keys[0], &keys[0] + <size_t>keys.size,
+        make_permutation_iterator(&elements[0], &index[0]),
+        &reduced_keys[0], &reduced_values[0]).first - &reduced_keys[0]
+    return count
+
+
+cpdef star_plus_2d(float[:] e_x, float[:] e_x2, float[:] e_y, float[:] e_y2,
+                   float[:] r_inv, float beta, float[:] e_c):
+    cdef size_t count = e_x.size
+
+    cdef c_star_plus_2d[float] *_star_plus = new c_star_plus_2d[float](beta)
+    cdef unpack_quinary_args[c_star_plus_2d[float]] *_star_plus_2d = \
+        new unpack_quinary_args[c_star_plus_2d[float]](deref(_star_plus))
+
+    copy_n(
+        make_transform_iterator(
+            make_zip_iterator(
+                make_tuple5(&e_x[0], &e_x2[0], &e_y[0], &e_y2[0], &r_inv[0])),
+            deref(_star_plus_2d)), count, &e_c[0])
+    return <float>accumulate(&e_c[0], &e_c[0] + count)
+
+
+cpdef match_count_uint32(uint32_t[:] a, uint32_t[:] b):
+    cdef equal_to[uint32_t] _equal_to
+    cdef unpack_binary_args[equal_to[uint32_t]] *unpacked_equal_to = \
+        new unpack_binary_args[equal_to[uint32_t]](_equal_to)
+    cdef identity[uint32_t] to_uint32
+    cdef size_t count = a.size
+
+    return <uint32_t>accumulate(
+        make_transform_iterator(
+            make_transform_iterator(
+                make_zip_iterator(make_tuple2(&a[0], &b[0])),
+                deref(unpacked_equal_to)), to_uint32),
+        make_transform_iterator(
+            make_transform_iterator(
+                make_zip_iterator(make_tuple2(&a[0] + count, &b[0] + count)),
+                deref(unpacked_equal_to)), to_uint32))
+
+
+cpdef sequence_int32(int32_t[:] a):
+    sequence(&a[0], &a[0] + <size_t>a.size)
+
+
+cpdef permuted_nonmatch_inclusive_scan_int32(int32_t[:] elements,
+                                             int32_t[:] index,
+                                             int32_t[:] output):
+    cdef not_equal_to[int32_t] _not_equal_to
+    cdef unpack_binary_args[not_equal_to[int32_t]] *unpacked_not_equal_to = \
+        new unpack_binary_args[not_equal_to[int32_t]](_not_equal_to)
+    cdef identity[int32_t] to_int32
+    cdef size_t count = index.size - 1
+
+    output[0] = 0
+    inclusive_scan(
+        make_transform_iterator(
+            make_transform_iterator(
+                make_zip_iterator(
+                    make_tuple2(
+                        make_permutation_iterator(&elements[0], &index[0]),
+                        make_permutation_iterator(&elements[0],
+                                                  &index[0] + 1))),
+                deref(unpacked_not_equal_to)), to_int32),
+        make_transform_iterator(
+            make_transform_iterator(
+                make_zip_iterator(
+                    make_tuple2(
+                        make_permutation_iterator(&elements[0], &index[0] + count),
+                        make_permutation_iterator(&elements[0],
+                                                  &index[0] + 1 + count))),
+                deref(unpacked_not_equal_to)), to_int32),
+        &output[0] + 1)
+
+
+cpdef rand_floats(float[:] output):
+    cdef counting_iterator[uint32_t] *range_start = \
+        new counting_iterator[uint32_t] (1)
+    cdef counting_iterator[uint32_t] *range_end = \
+        new counting_iterator[uint32_t] (1 + <uint32_t>output.size)
+
+    cdef SimpleRNG[uint32_t, float] rng
+
+    transform(deref(range_start), deref(range_end), &output[0], rng)
+
+
+def copy_if_int32_permuted_stencil(int32_t[:] data, uint8_t[:] stencil,
+                                   int32_t[:] index, int32_t[:] output):
+    #rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
+    cdef identity[uint8_t] test_true
+    cdef size_t count = index.size - 1
+
+    return <size_t>(copy_if_w_stencil(&data[0], &data[0] + count,
+                                      make_permutation_iterator(&stencil[0],
+                                                                &index[0]),
+                                      &output[0], test_true) - &output[0])
