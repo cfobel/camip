@@ -41,7 +41,8 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     sum_float_by_key, sum_xy_vectors, compute_block_group_keys,
                     minus_float, sum_permuted_float_by_key,
                     star_plus_2d, match_count_uint32, sequence_int32,
-                    permuted_nonmatch_inclusive_scan_int32)
+                    permuted_nonmatch_inclusive_scan_int32, rand_floats,
+                    copy_if_int32_permuted_stencil)
 
 try:
     profile
@@ -253,6 +254,8 @@ class CAMIP(object):
         self.n_c = self._n_c[:netlist.block_count]
         self.delta_n = np.empty(netlist.block_count, dtype=np.float32)
         self._packed_block_group_keys = np.empty_like(self._group_block_keys)
+        self._assess_urands = np.empty_like(self._delta_s)
+        self._rejected_block_keys = np.empty_like(self.block_group_keys)
 
     def shuffle_placement(self):
         '''
@@ -454,12 +457,17 @@ class CAMIP(object):
                                       self._delta_s)
         self.delta_s = self._delta_s[:N]
 
+        assess_urands = self._assess_urands[:self.delta_s.size]
         # TODO: Implement using Thrust [START]
-        assess_urands = np.random.rand(len(self.delta_s))
+        rand_floats(assess_urands)
         a = ((self.delta_s <= 0) | (assess_urands < np.exp(-self.delta_s /
                                                            temperature)))
-        rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
+        N = copy_if_int32_permuted_stencil(group_block_keys,
+                                           (~a).astype('uint8'),
+                                           packed_block_group_keys,
+                                           self._rejected_block_keys)
         # TODO: Implement using Thrust [END]
+        rejected_block_keys = self._rejected_block_keys[:N]
 
         #      (moves evaluated)                , (moves rejected)
         return (self.block_slot_keys.size - unmoved_count), rejected_block_keys

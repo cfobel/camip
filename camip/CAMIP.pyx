@@ -1,16 +1,18 @@
 #distutils: language=c++
 #cython: embedsignature=True, boundscheck=False
 from cython.operator cimport dereference as deref
-from libc.stdint cimport uint32_t, int32_t
+from libc.stdint cimport uint32_t, int32_t, uint8_t
 from libc.math cimport fmin
 import numpy as np
 cimport numpy as np
+from cythrust.random cimport SimpleRNG, ParkMillerRNGBase
+from cythrust.thrust.iterator.counting_iterator cimport counting_iterator
 from cythrust.thrust.pair cimport pair, make_pair
 from cythrust.thrust.sort cimport sort_by_key
 from cythrust.thrust.scan cimport exclusive_scan, inclusive_scan
 from cythrust.thrust.reduce cimport accumulate, accumulate_by_key, reduce_by_key
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
-from cythrust.thrust.copy cimport copy_n
+from cythrust.thrust.copy cimport copy_n, copy_if_w_stencil
 from cythrust.thrust.sequence cimport sequence
 from cythrust.thrust.transform cimport transform, transform2
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
@@ -591,3 +593,26 @@ cpdef permuted_nonmatch_inclusive_scan_int32(int32_t[:] elements,
                                                   &index[0] + 1 + count))),
                 deref(unpacked_not_equal_to)), to_int32),
         &output[0] + 1)
+
+
+cpdef rand_floats(float[:] output):
+    cdef counting_iterator[uint32_t] *range_start = \
+        new counting_iterator[uint32_t] (1)
+    cdef counting_iterator[uint32_t] *range_end = \
+        new counting_iterator[uint32_t] (1 + <uint32_t>output.size)
+
+    cdef SimpleRNG[uint32_t, float] rng
+
+    transform(deref(range_start), deref(range_end), &output[0], rng)
+
+
+def copy_if_int32_permuted_stencil(int32_t[:] data, uint8_t[:] stencil,
+                                   int32_t[:] index, int32_t[:] output):
+    #rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
+    cdef identity[uint8_t] test_true
+    cdef size_t count = index.size - 1
+
+    return <size_t>(copy_if_w_stencil(&data[0], &data[0] + count,
+                                      make_permutation_iterator(&stencil[0],
+                                                                &index[0]),
+                                      &output[0], test_true) - &output[0])
