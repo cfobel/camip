@@ -7,16 +7,18 @@ import numpy as np
 cimport numpy as np
 from cythrust.thrust.pair cimport pair, make_pair
 from cythrust.thrust.sort cimport sort_by_key
+from cythrust.thrust.scan cimport exclusive_scan, inclusive_scan
 from cythrust.thrust.reduce cimport accumulate, accumulate_by_key, reduce_by_key
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
 from cythrust.thrust.copy cimport copy_n
+from cythrust.thrust.sequence cimport sequence
 from cythrust.thrust.transform cimport transform, transform2
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
 from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
 from cythrust.thrust.tuple cimport make_tuple5, make_tuple4, make_tuple2
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
-                                         unpack_quinary_args, plus, minus,
-                                         reduce_plus4)
+                                         not_equal_to, unpack_quinary_args,
+                                         plus, minus, reduce_plus4, identity)
 cimport cython
 
 cdef extern from "math.h" nogil:
@@ -537,3 +539,55 @@ cpdef star_plus_2d(float[:] e_x, float[:] e_x2, float[:] e_y, float[:] e_y2,
                 make_tuple5(&e_x[0], &e_x2[0], &e_y[0], &e_y2[0], &r_inv[0])),
             deref(_star_plus_2d)), count, &e_c[0])
     return <float>accumulate(&e_c[0], &e_c[0] + count)
+
+
+cpdef match_count_uint32(uint32_t[:] a, uint32_t[:] b):
+    cdef equal_to[uint32_t] _equal_to
+    cdef unpack_binary_args[equal_to[uint32_t]] *unpacked_equal_to = \
+        new unpack_binary_args[equal_to[uint32_t]](_equal_to)
+    cdef identity[uint32_t] to_uint32
+    cdef size_t count = a.size
+
+    return <uint32_t>accumulate(
+        make_transform_iterator(
+            make_transform_iterator(
+                make_zip_iterator(make_tuple2(&a[0], &b[0])),
+                deref(unpacked_equal_to)), to_uint32),
+        make_transform_iterator(
+            make_transform_iterator(
+                make_zip_iterator(make_tuple2(&a[0] + count, &b[0] + count)),
+                deref(unpacked_equal_to)), to_uint32))
+
+
+cpdef sequence_int32(int32_t[:] a):
+    sequence(&a[0], &a[0] + <size_t>a.size)
+
+
+cpdef permuted_nonmatch_inclusive_scan_int32(int32_t[:] elements,
+                                             int32_t[:] index,
+                                             int32_t[:] output):
+    cdef not_equal_to[int32_t] _not_equal_to
+    cdef unpack_binary_args[not_equal_to[int32_t]] *unpacked_not_equal_to = \
+        new unpack_binary_args[not_equal_to[int32_t]](_not_equal_to)
+    cdef identity[int32_t] to_int32
+    cdef size_t count = index.size - 1
+
+    output[0] = 0
+    inclusive_scan(
+        make_transform_iterator(
+            make_transform_iterator(
+                make_zip_iterator(
+                    make_tuple2(
+                        make_permutation_iterator(&elements[0], &index[0]),
+                        make_permutation_iterator(&elements[0],
+                                                  &index[0] + 1))),
+                deref(unpacked_not_equal_to)), to_int32),
+        make_transform_iterator(
+            make_transform_iterator(
+                make_zip_iterator(
+                    make_tuple2(
+                        make_permutation_iterator(&elements[0], &index[0] + count),
+                        make_permutation_iterator(&elements[0],
+                                                  &index[0] + 1 + count))),
+                deref(unpacked_not_equal_to)), to_int32),
+        &output[0] + 1)

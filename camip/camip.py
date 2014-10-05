@@ -40,7 +40,8 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     cAnnealSchedule, get_std_dev, sort_netlist_keys,
                     sum_float_by_key, sum_xy_vectors, compute_block_group_keys,
                     minus_float, sum_permuted_float_by_key,
-                    star_plus_2d)
+                    star_plus_2d, match_count_uint32, sequence_int32,
+                    permuted_nonmatch_inclusive_scan_int32)
 
 try:
     profile
@@ -245,10 +246,13 @@ class CAMIP(object):
                                                np.newaxis]
         self.r_inv = np.reciprocal(netlist.r.A.ravel().astype(np.float32))
         self.block_group_keys = np.empty(netlist.block_count, dtype=np.int32)
+        self._group_block_keys = np.empty(self.block_group_keys.size,
+                                          dtype=self.block_group_keys.dtype)
         self._delta_s = np.empty(netlist.block_count, dtype=np.float32)
         self._n_c = np.empty_like(netlist.C.row, dtype=np.float32)
         self.n_c = self._n_c[:netlist.block_count]
         self.delta_n = np.empty(netlist.block_count, dtype=np.float32)
+        self._packed_block_group_keys = np.empty_like(self._group_block_keys)
 
     def shuffle_placement(self):
         '''
@@ -420,29 +424,29 @@ class CAMIP(object):
                                  self.block_group_keys,
                                  self.s2p.total_slot_count)
 
-        # TODO: Implement using Thrust [START]
-        moved_mask = (self.block_slot_keys != self.block_slot_keys_prime)
-        unmoved_count = moved_mask.size - moved_mask.sum()
+        unmoved_count = match_count_uint32(self.block_slot_keys,
+                                           self.block_slot_keys_prime)
 
-        _group_block_keys = np.arange(self.block_group_keys.size,
-                                      dtype=self.block_group_keys.dtype)
+        # ## Packed block group keys ##
+        #
+        # Each block that has been assigned a non-zero move belongs to exactly
+        # one group of associated-moves.  For each group of associated-moves,
+        # there is a corresponding group key.  Given the index of a block in
+        # the list of blocks belonging to groups of associated moves,
+        sequence_int32(self._group_block_keys)
 
         # Thrust `sort_by_key`.
-        sort_netlist_keys(self.block_group_keys.copy(), _group_block_keys)
+        sort_netlist_keys(self.block_group_keys.copy(), self._group_block_keys)
 
-        group_block_keys = _group_block_keys[:-unmoved_count]
-        if len(group_block_keys) == 0:
+        group_block_keys = self._group_block_keys[:-unmoved_count]
+        if group_block_keys.size == 0:
             self.delta_s = self._delta_s[:0]
             return 0, np.empty(0)
-        packed_group_segments = np.empty_like(group_block_keys, dtype='int32')
-        packed_group_segments[0] = 1
-        packed_group_segments[1:] = (self.block_group_keys
-                                     [group_block_keys][1:] !=
-                                     self.block_group_keys
-                                     [group_block_keys][:-1])
-        packed_block_group_keys = np.cumsum(packed_group_segments,
-                                            dtype='int32') - 1
-        # TODO: Implement using Thrust [END]
+        packed_block_group_keys = (self._packed_block_group_keys
+                                   [:group_block_keys.size])
+        permuted_nonmatch_inclusive_scan_int32(self.block_group_keys,
+                                               group_block_keys,
+                                               packed_block_group_keys)
 
         # Thrust `reduce_by_key` over a `permutation` iterator.
         N = sum_permuted_float_by_key(packed_block_group_keys, self.delta_n,
@@ -458,7 +462,7 @@ class CAMIP(object):
         # TODO: Implement using Thrust [END]
 
         #      (moves evaluated)                , (moves rejected)
-        return (moved_mask.size - unmoved_count), rejected_block_keys
+        return (self.block_slot_keys.size - unmoved_count), rejected_block_keys
 
     @profile
     def apply_groups(self, rejected_move_block_keys):
