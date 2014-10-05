@@ -260,12 +260,6 @@ cpdef sum_xy_vectors(int32_t[:] block_keys, int32_t[:] net_keys,
         reduce_compare, reduce_plus4)
 
 
-cpdef copy_e_c_to_omega(float[:] e_c, int32_t[:] block_keys, float[:] omega):
-    copy_n(
-        make_permutation_iterator(&e_c[0], &block_keys[0]),
-        <size_t>block_keys.size, &omega[0])
-
-
 cpdef sort_float_coo(int32_t[:] keys1, int32_t[:] keys2, float[:] values):
     sort_by_key(&keys1[0], &keys1[0] + <size_t>keys1.size,
                 make_zip_iterator(make_tuple2(&keys2[0], &values[0])))
@@ -511,7 +505,7 @@ def compute_block_group_keys(uint32_t[:] block_slot_keys,
                deref(group_key_func))
 
 
-def compute_move_deltas(float[:] n_c, float[:] n_c_prime, float[:] delta_n):
+def minus_float(float[:] n_c, float[:] n_c_prime, float[:] delta_n):
     cdef size_t count = n_c.size
     cdef minus[float] minus_func
 
