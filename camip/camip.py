@@ -42,7 +42,7 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     minus_float, sum_permuted_float_by_key,
                     star_plus_2d, match_count_uint32, sequence_int32,
                     permuted_nonmatch_inclusive_scan_int32, rand_floats,
-                    copy_if_int32_permuted_stencil)
+                    copy_if_int32_permuted_stencil, assess_groups)
 
 try:
     profile
@@ -457,16 +457,9 @@ class CAMIP(object):
                                       self._delta_s)
         self.delta_s = self._delta_s[:N]
 
-        assess_urands = self._assess_urands[:self.delta_s.size]
-        # TODO: Implement using Thrust [START]
-        rand_floats(assess_urands)
-        a = ((self.delta_s <= 0) | (assess_urands < np.exp(-self.delta_s /
-                                                           temperature)))
-        N = copy_if_int32_permuted_stencil(group_block_keys,
-                                           (~a).astype('uint8'),
-                                           packed_block_group_keys,
-                                           self._rejected_block_keys)
-        # TODO: Implement using Thrust [END]
+        N = assess_groups(temperature, group_block_keys,
+                          packed_block_group_keys, self.delta_s,
+                          self._rejected_block_keys)
         rejected_block_keys = self._rejected_block_keys[:N]
 
         #      (moves evaluated)                , (moves rejected)

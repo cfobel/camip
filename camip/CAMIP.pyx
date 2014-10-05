@@ -20,7 +20,8 @@ from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
 from cythrust.thrust.tuple cimport make_tuple5, make_tuple4, make_tuple2
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
                                          not_equal_to, unpack_quinary_args,
-                                         plus, minus, reduce_plus4, identity)
+                                         plus, minus, reduce_plus4, identity,
+                                         logical_not)
 cimport cython
 
 cdef extern from "math.h" nogil:
@@ -34,6 +35,9 @@ cdef extern from "math.h" nogil:
 
 
 cdef extern from "CAMIP.hpp" nogil:
+    cdef cppclass assess_group[T]:
+        assess_group(T)
+
     cdef cppclass evaluate_move:
         evaluate_move(float)
 
@@ -610,9 +614,32 @@ def copy_if_int32_permuted_stencil(int32_t[:] data, uint8_t[:] stencil,
                                    int32_t[:] index, int32_t[:] output):
     #rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
     cdef identity[uint8_t] test_true
-    cdef size_t count = index.size - 1
+    cdef size_t count = index.size
 
     return <size_t>(copy_if_w_stencil(&data[0], &data[0] + count,
                                       make_permutation_iterator(&stencil[0],
                                                                 &index[0]),
                                       &output[0], test_true) - &output[0])
+
+
+def assess_groups(float temperature, int32_t[:] group_block_keys,
+                  int32_t[:] packed_block_group_keys, float[:] delta_s,
+                  int32_t[:] output):
+    #rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
+    cdef size_t count = packed_block_group_keys.size
+    cdef assess_group[float] *_assess_group = \
+        new assess_group[float](temperature)
+    cdef unpack_binary_args[assess_group[float]] *unpack_assess_group = \
+        new unpack_binary_args[assess_group[float]](deref(_assess_group))
+    cdef logical_not[uint8_t] _logical_not
+
+    # a = ((self.delta_s <= 0) | (assess_urands < np.exp(-self.delta_s / temperature)))
+    # rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
+    return <size_t>(copy_if_w_stencil(
+        &group_block_keys[0], &group_block_keys[0] + count,
+        make_permutation_iterator(
+            make_transform_iterator(
+                make_zip_iterator(
+                    make_tuple2(&packed_block_group_keys[0], &delta_s[0])),
+                deref(unpack_assess_group)), &packed_block_group_keys[0]),
+        &output[0], _logical_not) - &output[0])

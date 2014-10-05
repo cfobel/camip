@@ -2,6 +2,7 @@
 #define ___CAMIP__HPP___
 
 #include <cmath>
+#include <cstdlib>  //  RAND_MAX
 #include <thrust/pair.h>
 
 
@@ -388,5 +389,48 @@ struct star_plus_2d {
                      sqrt(e_y2 - e_y * e_y * r_inv + 1));
   }
 };
+
+
+template <typename RealT>
+struct assess_group {
+  /* # `assess_move_pair_functor` # */
+  /* Assess whether a move-pair should be applied, based on the current
+    * temperature setting.  The assessment criteria corresponds to the
+    * annealing acceptance rules from VPR. */
+  typedef bool result_type;
+
+  RealT temperature_;
+
+  assess_group(RealT temperature) : temperature_(temperature) {}
+
+  bool assess(size_t seed, RealT delta) {
+    /* ## `assess` ## */
+    /* Based on a `seed` and a scalar delta-cost, decide whether or not the
+      * corresponding swap should be accepted. */
+    if (delta <= 0) {
+        return true;
+    }
+
+    if (temperature_ == 0.) {
+        return false;
+    }
+
+    /* - Generate a random floating-point value between `0` and `1`. */
+    RealT fnum = SimpleRNG<uint32_t, RealT>()(seed);
+    RealT prob_fac = exp(-delta / temperature_);
+    return (prob_fac > fnum);
+  }
+
+  template <typename Key, typename Delta>
+  result_type operator() (Key group_key, Delta delta) {
+    /* Apply simple hash function to compute a random-number generator seed
+     * based on group key and group delta cost. */
+    size_t seed = static_cast<size_t>(delta * static_cast<RealT>(RAND_MAX));
+    seed ^= static_cast<size_t>(group_key);
+
+    return assess(seed, delta);
+  }
+};
+
 
 #endif  // #ifndef ___CAMIP__HPP___
