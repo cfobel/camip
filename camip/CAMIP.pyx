@@ -20,7 +20,8 @@ from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
 from cythrust.thrust.tuple cimport make_tuple5, make_tuple4, make_tuple2
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
                                          not_equal_to, unpack_quinary_args,
-                                         plus, minus, reduce_plus4, identity)
+                                         plus, minus, reduce_plus4, identity,
+                                         logical_not)
 cimport cython
 
 cdef extern from "math.h" nogil:
@@ -34,6 +35,9 @@ cdef extern from "math.h" nogil:
 
 
 cdef extern from "CAMIP.hpp" nogil:
+    cdef cppclass assess_group[T]:
+        assess_group(T)
+
     cdef cppclass evaluate_move:
         evaluate_move(float)
 
@@ -543,7 +547,14 @@ cpdef star_plus_2d(float[:] e_x, float[:] e_x2, float[:] e_y, float[:] e_y2,
     return <float>accumulate(&e_c[0], &e_c[0] + count)
 
 
-cpdef match_count_uint32(uint32_t[:] a, uint32_t[:] b):
+cpdef equal_count_uint32(uint32_t[:] a, uint32_t[:] b):
+    '''
+    Return the number of index positions for which `a` and `b` are equal.
+
+    Equivalent to:
+
+        return (a == b).sum()
+    '''
     cdef equal_to[uint32_t] _equal_to
     cdef unpack_binary_args[equal_to[uint32_t]] *unpacked_equal_to = \
         new unpack_binary_args[equal_to[uint32_t]](_equal_to)
@@ -595,11 +606,14 @@ cpdef permuted_nonmatch_inclusive_scan_int32(int32_t[:] elements,
         &output[0] + 1)
 
 
-cpdef rand_floats(float[:] output):
+cpdef rand_floats(float[:] output, uint32_t seed):
+    '''
+    Fill `output` with random values.
+    '''
     cdef counting_iterator[uint32_t] *range_start = \
-        new counting_iterator[uint32_t] (1)
+        new counting_iterator[uint32_t] (seed)
     cdef counting_iterator[uint32_t] *range_end = \
-        new counting_iterator[uint32_t] (1 + <uint32_t>output.size)
+        new counting_iterator[uint32_t] (seed + <uint32_t>output.size)
 
     cdef SimpleRNG[uint32_t, float] rng
 
@@ -608,11 +622,73 @@ cpdef rand_floats(float[:] output):
 
 def copy_if_int32_permuted_stencil(int32_t[:] data, uint8_t[:] stencil,
                                    int32_t[:] index, int32_t[:] output):
-    #rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
+    '''
+    Equivalent to:
+
+        output = data[stencil[index] == True]
+        return output.size
+    '''
     cdef identity[uint8_t] test_true
-    cdef size_t count = index.size - 1
+    cdef size_t count = index.size
 
     return <size_t>(copy_if_w_stencil(&data[0], &data[0] + count,
                                       make_permutation_iterator(&stencil[0],
                                                                 &index[0]),
                                       &output[0], test_true) - &output[0])
+
+
+def assess_groups(float temperature, int32_t[:] group_block_keys,
+                  int32_t[:] packed_block_group_keys,
+                  float[:] group_delta_costs, int32_t[:] output):
+    '''
+    Given the specified annealing temperature and the delta cost for applying
+    each group of associated-moves:
+
+        - For each group of associated-moves, determine whether all moves in
+          the group should be applied or rejected _(all or nothing)_.
+        - Write the keys of all _blocks_ for which moves have been rejected to
+          the `output` array.
+        - Return the number of _blocks_ for which moves were rejected.
+
+    Roughly equivalent to:
+
+        N = group_delta_costs.size
+        a = ((group_delta_costs <= 0) | (np.random.rand(N) <
+                                         np.exp(-group_delta_costs /
+                                                temperature)))
+        rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
+        return rejected_block_keys.size
+    '''
+    cdef size_t count = packed_block_group_keys.size
+    cdef assess_group[float] *_assess_group = \
+        new assess_group[float](temperature)
+    cdef unpack_binary_args[assess_group[float]] *unpack_assess_group = \
+        new unpack_binary_args[assess_group[float]](deref(_assess_group))
+    cdef logical_not[uint8_t] _logical_not
+
+    # a = ((group_delta_costs <= 0) | (rand() < np.exp(-group_delta_costs / temperature)))
+    # rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
+    return <size_t>(copy_if_w_stencil(
+        &group_block_keys[0], &group_block_keys[0] + count,
+        make_permutation_iterator(
+            make_transform_iterator(
+                make_zip_iterator(
+                    make_tuple2(&packed_block_group_keys[0],
+                                &group_delta_costs[0])),
+                deref(unpack_assess_group)), &packed_block_group_keys[0]),
+        &output[0], _logical_not) - &output[0])
+
+
+def copy_permuted_uint32(uint32_t[:] a, uint32_t[:] b, int32_t[:] index):
+    '''
+    Equivalent to:
+
+        b[index] = a[index]
+
+    where index is an array of indexes corresponding to positions to copy from
+    `a` to `b`.
+    '''
+    cdef size_t count = index.size
+
+    copy_n(make_permutation_iterator(&a[0], &index[0]), count,
+           make_permutation_iterator(&b[0], &index[0]))

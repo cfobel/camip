@@ -40,9 +40,9 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     cAnnealSchedule, get_std_dev, sort_netlist_keys,
                     sum_float_by_key, sum_xy_vectors, compute_block_group_keys,
                     minus_float, sum_permuted_float_by_key,
-                    star_plus_2d, match_count_uint32, sequence_int32,
-                    permuted_nonmatch_inclusive_scan_int32, rand_floats,
-                    copy_if_int32_permuted_stencil)
+                    star_plus_2d, equal_count_uint32, sequence_int32,
+                    permuted_nonmatch_inclusive_scan_int32, assess_groups,
+                    copy_permuted_uint32)
 
 try:
     profile
@@ -336,7 +336,7 @@ class CAMIP(object):
            Thrust [`transform`][1] operations _(i.e., [map of sequence][2])_.
 
         [1]: http://thrust.github.io/doc/group__transformations.html
-        [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049#s0110
+        [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
         '''
         # TODO: Use C++ random number generator.
         np.random.seed(seed)
@@ -374,7 +374,7 @@ class CAMIP(object):
         [1]: http://thrust.github.io/doc/group__reductions.html#ga633d78d4cb2650624ec354c9abd0c97f
         [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000037#s0175
         [3]: http://thrust.github.io/doc/group__transformations.html
-        [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049#s0110
+        [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
         '''
         # Thrust `reduce_by_key` over a `transform` iterator.
         evaluate_moves(self.omega_prime.row,
@@ -404,22 +404,24 @@ class CAMIP(object):
         Notes
         =====
 
-         - _Most_ operations are implemented using one of the following Thrust
-           operations:
+         - All operations are implemented using one of the following Thrust
+         operations:
 
           - [`reduce_by_key`][1] _(i.e., [category reduction][2])_.
-          - [`transform`][3] _(i.e., [map of sequence][4])_.
-
-        TODO
-        ====
-
-         - Implement the serial sections marked below using Thrust to enable
-           concurrency/parallelism.
+          - [`transform`][3] _(i.e., [map][4])_.
+          - [`sequence`][5] _(i.e., [map][4] to store a range of values)_.
+          - [`inclusive_scan`][6] _(i.e., [fused map and prefix sum][7])_.
+          - [`copy_if`][8] _(i.e., [fused map and pack][9])_.
 
         [1]: http://thrust.github.io/doc/group__reductions.html#ga633d78d4cb2650624ec354c9abd0c97f
         [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000037#s0175
         [3]: http://thrust.github.io/doc/group__transformations.html
-        [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049#s0110
+        [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
+        [5]: http://thrust.github.io/doc/sequence_8h.html
+        [6]: http://thrust.github.io/doc/group__prefixsums.html#ga7109170b96a48fab736e52b75f423464
+        [7]: http://www.sciencedirect.com/science/article/pii/B9780124159938000050#s0155
+        [8]: http://thrust.github.io/doc/group__stream__compaction.html#ga36d9d6ed8e17b442c1fd8dc40bd515d5
+        [9]: http://www.sciencedirect.com/science/article/pii/B9780124159938000062#s0065
         '''
         # Thrust `transform`.
         compute_block_group_keys(self.block_slot_keys,
@@ -427,7 +429,8 @@ class CAMIP(object):
                                  self.block_group_keys,
                                  self.s2p.total_slot_count)
 
-        unmoved_count = match_count_uint32(self.block_slot_keys,
+        # Thrust `reduce`.
+        unmoved_count = equal_count_uint32(self.block_slot_keys,
                                            self.block_slot_keys_prime)
 
         # ## Packed block group keys ##
@@ -436,6 +439,8 @@ class CAMIP(object):
         # one group of associated-moves.  For each group of associated-moves,
         # there is a corresponding group key.  Given the index of a block in
         # the list of blocks belonging to groups of associated moves,
+
+        # Thrust `sequence`.
         sequence_int32(self._group_block_keys)
 
         # Thrust `sort_by_key`.
@@ -447,6 +452,8 @@ class CAMIP(object):
             return 0, np.empty(0)
         packed_block_group_keys = (self._packed_block_group_keys
                                    [:group_block_keys.size])
+
+        # Thrust `inclusive_scan`.
         permuted_nonmatch_inclusive_scan_int32(self.block_group_keys,
                                                group_block_keys,
                                                packed_block_group_keys)
@@ -457,16 +464,10 @@ class CAMIP(object):
                                       self._delta_s)
         self.delta_s = self._delta_s[:N]
 
-        assess_urands = self._assess_urands[:self.delta_s.size]
-        # TODO: Implement using Thrust [START]
-        rand_floats(assess_urands)
-        a = ((self.delta_s <= 0) | (assess_urands < np.exp(-self.delta_s /
-                                                           temperature)))
-        N = copy_if_int32_permuted_stencil(group_block_keys,
-                                           (~a).astype('uint8'),
-                                           packed_block_group_keys,
-                                           self._rejected_block_keys)
-        # TODO: Implement using Thrust [END]
+        # Thrust `copy_if`.
+        N = assess_groups(temperature, group_block_keys,
+                          packed_block_group_keys, self.delta_s,
+                          self._rejected_block_keys)
         rejected_block_keys = self._rejected_block_keys[:N]
 
         #      (moves evaluated)                , (moves rejected)
@@ -476,15 +477,26 @@ class CAMIP(object):
     def apply_groups(self, rejected_move_block_keys):
         '''
          - Update placement according to accepted moves.
+
+        Notes
+        =====
+
+         - All operations are implemented using one of the following Thrust
+         operations:
+
+          - [`transform`][1] _(i.e., [map][2])_.
+
+        [1]: http://thrust.github.io/doc/group__transformations.html
+        [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
         '''
         if len(rejected_move_block_keys) == 0:
             return
-        # TODO: Implement using Thrust [START]
-        self.block_slot_keys_prime[rejected_move_block_keys] = (
-            self.block_slot_keys[rejected_move_block_keys])
+
+        # Thrust `transform`.
+        copy_permuted_uint32(self.block_slot_keys, self.block_slot_keys_prime,
+                             rejected_move_block_keys)
         self.block_slot_keys, self.block_slot_keys_prime = (
             self.block_slot_keys_prime, self.block_slot_keys)
-        # TODO: Implement using Thrust [END]
 
     @profile
     def run_iteration(self, seed, temperature, max_io_move=None,
