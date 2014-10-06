@@ -26,21 +26,12 @@ def place(net_file_namebase, seed, inner_num=1.):
     schedule = VPRSchedule(placer.s2p, inner_num, placer.netlist, placer)
     print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature
     states = schedule.run(placer)
-    extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
-                      placer.s2p)
-    p_z = np.zeros_like(placer.p_x)
-    p_z[:placer.s2p.io_count] = (placer.block_slot_keys[:placer.s2p.io_count] %
-                                 placer.io_capacity)
-    block_positions = np.array([placer.p_x, placer.p_y, p_z], dtype='uint32').T
 
     # Convert list of state dictionaries into a `pandas.DataFrame`.
     stats_layout = pd.DataFrame(
         np.array([], dtype=get_PLACEMENT_STATS_DATAFRAME_LAYOUT()))
     place_stats = stats_layout.append(states)
 
-    save_placement(net_file_namebase, block_positions, place_stats,
-                   output_path=None, output_dir=None, inner_num=inner_num,
-                   seed=seed)
     return placer, place_stats
 
 
@@ -134,16 +125,41 @@ def save_placement(net_file_namebase, block_positions, place_stats,
     h5f.close()
 
 
-if __name__ == '__main__':
-    #import matplotlib.pyplot as plt
+def parse_args(argv=None):
+    '''Parses arguments, returns (options, args).'''
+    from argparse import ArgumentParser
 
-    if len(sys.argv) == 3:
-        seed = int(sys.argv[2])
-    else:
-        seed = np.random.randint(100000)
-    np.random.seed(seed)
-    placer, place_stats = place(sys.argv[1], seed)
-    #fig = plt.figure()
-    #ax = fig.add_subplot(111, title=sys.argv[1])
-    #ax.plot(costs)
-    #plt.show(block=True)
+    if argv is None:
+        argv = sys.argv
+
+    parser = ArgumentParser(description='Run CAMIP place based on net-file'
+                            'namebase.')
+    mutex_group = parser.add_mutually_exclusive_group()
+    mutex_group.add_argument('-o', '--output_path', default=None, type=path)
+    mutex_group.add_argument('-d', '--output_dir', default=None, type=path)
+    parser.add_argument('-i', '--inner-num', type=float, default=1.)
+    parser.add_argument('-s', '--seed', default=np.random.randint(100000),
+                        type=int)
+    parser.add_argument(dest='net_file_namebase')
+
+    args = parser.parse_args()
+    return args
+
+
+if __name__ == '__main__':
+    args = parse_args()
+    print args
+
+    np.random.seed(args.seed)
+    placer, place_stats = place(args.net_file_namebase, args.seed,
+                                args.inner_num)
+
+    extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
+                      placer.s2p)
+    p_z = np.zeros_like(placer.p_x)
+    p_z[:placer.s2p.io_count] = (placer.block_slot_keys[:placer.s2p.io_count] %
+                                 placer.io_capacity)
+    block_positions = np.array([placer.p_x, placer.p_y, p_z], dtype='uint32').T
+    save_placement(args.net_file_namebase, block_positions, place_stats,
+                   output_path=args.output_path, output_dir=args.output_dir,
+                   inner_num=args.inner_num, seed=args.seed)

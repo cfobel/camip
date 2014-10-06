@@ -34,6 +34,7 @@ import numpy as np
 import scipy.sparse as sparse
 from collections import OrderedDict
 
+from cythrust.si_prefix import si_format
 from cyplace_experiments.data import open_netlists_h5f
 from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     random_vpr_pattern, slot_moves, extract_positions,
@@ -107,16 +108,24 @@ class VPRSchedule(object):
             total_moves, rejected_moves = self.outer_iteration(placer)
             end = time.time()
             total_move_count += total_moves
-            print (self.anneal_schedule.temperature, self.anneal_schedule.rlim,
-                   self.anneal_schedule.success_ratio)
-            states.append({'start': start, 'end': end,
-                           'temperature': self.anneal_schedule.temperature,
-                           'cost': placer.theta,
-                           'success_ratio': self.anneal_schedule.success_ratio,
-                           'radius_limit': self.anneal_schedule.rlim,
-                           'total_iteration_count': total_move_count})
+            state = OrderedDict([('start', start), ('end', end),
+                                 ('cost', placer.theta),
+                                 ('temperature',
+                                  self.anneal_schedule.temperature),
+                                 ('success_ratio',
+                                  self.anneal_schedule.success_ratio),
+                                 ('radius_limit', self.anneal_schedule.rlim),
+                                 ('total_iteration_count', total_move_count)])
+            if not states:
+                print '\n| ' + ' | '.join(state.keys()[2:]) + ' |'
+                print '|' + '|'.join(['-' * (len(k) + 2)
+                                      for k in state.keys()[2:]]) + '|'
+            states.append(state)
+            print '|' + '|'.join(['{0:>{1}s}'.format(si_format(v, 2),
+                                                     len(k) + 2)
+                                  for k, v in state.items()[2:]]) + '|'
         placer.finalize()
-        print 'Runtime: %.2fs' % (end - start)
+        print '\nRuntime: %.2fs' % (states[-1]['end'] - states[0]['start'])
         return states
 
 
