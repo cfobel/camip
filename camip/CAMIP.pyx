@@ -6,9 +6,10 @@ from libc.math cimport fmin
 import numpy as np
 cimport numpy as np
 from cythrust.random cimport SimpleRNG, ParkMillerRNGBase
+from cythrust.thrust.iterator.repeated_range_iterator cimport repeated_range
 from cythrust.thrust.iterator.counting_iterator cimport counting_iterator
 from cythrust.thrust.pair cimport pair, make_pair
-from cythrust.thrust.sort cimport sort_by_key
+from cythrust.thrust.sort cimport sort_by_key, sort
 from cythrust.thrust.scan cimport exclusive_scan, inclusive_scan
 from cythrust.thrust.reduce cimport accumulate, accumulate_by_key, reduce_by_key
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
@@ -692,3 +693,41 @@ def copy_permuted_uint32(uint32_t[:] a, uint32_t[:] b, int32_t[:] index):
 
     copy_n(make_permutation_iterator(&a[0], &index[0]), count,
            make_permutation_iterator(&b[0], &index[0]))
+
+
+def pack_io(uint32_t[:] io_slot_block_keys, size_t io_capacity):
+    '''
+    To make output compatible with VPR, we must pack blocks in IO tiles to fill
+    IO tile-slots contiguously.
+
+    Notes
+    =====
+
+    This method creates a temporary array:
+
+     - The IO tile key for each slot within the IO range.
+
+    The length of this array is equal to the number of IO slots in the FPGA
+    architecture, _i.e., the number of IO tiles multiplied by the per-tile
+    IO-capacity_.
+    '''
+    cdef counting_iterator[uint32_t] count_iter
+
+    cdef size_t io_slot_count = io_slot_block_keys.size
+    cdef size_t io_tile_count = io_slot_count // io_capacity
+
+    cdef np.ndarray[uint32_t,ndim=1] io_tile_keys = np.empty_like(io_slot_block_keys)
+
+    cdef repeated_range[counting_iterator[uint32_t], uint32_t] *io_tile_key_iter = \
+        new repeated_range[counting_iterator[uint32_t], uint32_t](count_iter,
+                                                                  io_capacity)
+
+    copy_n(io_tile_key_iter.begin(), io_slot_count, &io_tile_keys[0])
+
+    # Pack blocks to start of each IO tile.
+    sort(make_zip_iterator(make_tuple2(&io_tile_keys[0],
+                                       &io_slot_block_keys[0])),
+         make_zip_iterator(make_tuple2(&io_tile_keys[0] + io_slot_count,
+                                       &io_slot_block_keys[0] +
+                                       io_slot_count)))
+    del io_tile_key_iter
