@@ -42,7 +42,7 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     minus_float, sum_permuted_float_by_key,
                     star_plus_2d, equal_count_uint32, sequence_int32,
                     permuted_nonmatch_inclusive_scan_int32, assess_groups,
-                    copy_permuted_uint32)
+                    copy_permuted_uint32, pack_io)
 
 try:
     profile
@@ -99,18 +99,25 @@ class VPRSchedule(object):
         return total_moves, rejected_moves
 
     def run(self, placer):
-        start = time.time()
-        costs = []
+        states = []
+        total_move_count = 0
         while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
                placer.netlist.C.shape[1]):
-            costs += [placer.theta]
+            start = time.time()
             total_moves, rejected_moves = self.outer_iteration(placer)
+            end = time.time()
+            total_move_count += total_moves
             print (self.anneal_schedule.temperature, self.anneal_schedule.rlim,
                    self.anneal_schedule.success_ratio)
-        end = time.time()
+            states.append({'start': start, 'end': end,
+                           'temperature': self.anneal_schedule.temperature,
+                           'cost': placer.theta,
+                           'success_ratio': self.anneal_schedule.success_ratio,
+                           'radius_limit': self.anneal_schedule.rlim,
+                           'total_iteration_count': total_move_count})
         placer.finalize()
         print 'Runtime: %.2fs' % (end - start)
-        return costs
+        return states
 
 
 class MatrixNetlist(object):
@@ -172,7 +179,7 @@ class MatrixNetlist(object):
 
 
 class CAMIP(object):
-    def __init__(self, netlist, io_capacity=2):
+    def __init__(self, netlist, io_capacity=3):
         self.netlist = netlist
         self.io_capacity = io_capacity
 
@@ -513,6 +520,10 @@ class CAMIP(object):
         # Copy the final position of each block to the slot-to-block-key
         # mapping.
         self._sync_block_slot_keys_to_slot_block_keys()
+
+        # To make output compatible with VPR, we must pack blocks in IO tiles
+        # to fill IO tile-slots contiguously.
+        pack_io(self.slot_block_keys[:self.s2p.io_slot_count], self.io_capacity)
 
 
 def main():
