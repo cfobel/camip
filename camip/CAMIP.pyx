@@ -4,22 +4,23 @@ from cython.operator cimport dereference as deref
 from libc.math cimport fmin
 import numpy as np
 cimport numpy as np
-from cythrust.thrust.iterator.repeated_range_iterator cimport repeated_range
-from cythrust.thrust.iterator.counting_iterator cimport counting_iterator
-from cythrust.thrust.sort cimport sort_by_key, sort
-from cythrust.thrust.scan cimport exclusive_scan, inclusive_scan
-from cythrust.thrust.reduce cimport accumulate, accumulate_by_key, reduce_by_key
-from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
 from cythrust.thrust.copy cimport copy_n, copy_if_w_stencil
-from cythrust.thrust.sequence cimport sequence
-from cythrust.thrust.transform cimport transform, transform2
-from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
-from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
-from cythrust.thrust.tuple cimport make_tuple5, make_tuple4, make_tuple2
+from cythrust.thrust.fill cimport fill_n
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
                                          not_equal_to, unpack_quinary_args,
                                          plus, minus, reduce_plus4, identity,
                                          logical_not)
+from cythrust.thrust.iterator.counting_iterator cimport counting_iterator
+from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
+from cythrust.thrust.iterator.repeated_range_iterator cimport repeated_range
+from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
+from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
+from cythrust.thrust.reduce cimport accumulate, accumulate_by_key, reduce_by_key
+from cythrust.thrust.scan cimport exclusive_scan, inclusive_scan
+from cythrust.thrust.sequence cimport sequence
+from cythrust.thrust.sort cimport sort_by_key, sort
+from cythrust.thrust.transform cimport transform, transform2
+from cythrust.thrust.tuple cimport make_tuple5, make_tuple4, make_tuple2
 cimport cython
 
 
@@ -474,7 +475,7 @@ cpdef permuted_nonmatch_inclusive_scan_int32(int32_t[:] elements,
     cdef identity[int32_t] to_int32
     cdef size_t count = index.size - 1
 
-    output[0] = 0
+    fill_n(&output[0], 1, 0)
     inclusive_scan(
         make_transform_iterator(
             make_transform_iterator(

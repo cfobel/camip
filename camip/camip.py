@@ -36,18 +36,31 @@ from collections import OrderedDict
 
 from cythrust.si_prefix import si_format
 from cyplace_experiments.data import open_netlists_h5f
-from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
-                    random_vpr_pattern, slot_moves, extract_positions,
-                    cAnnealSchedule, get_std_dev, sort_netlist_keys,
-                    sum_float_by_key, sum_xy_vectors, compute_block_group_keys,
-                    minus_float, sum_permuted_float_by_key,
-                    star_plus_2d, equal_count_uint32, sequence_int32,
-                    permuted_nonmatch_inclusive_scan_int32, assess_groups,
-                    copy_permuted_uint32, pack_io)
+from .CAMIP import (VPRAutoSlotKeyTo2dPosition, random_vpr_pattern,
+                    cAnnealSchedule, get_std_dev, pack_io,
+                    # Only used in class constructors _(not in main methods)_.
+                    sort_netlist_keys, sum_float_by_key)
 
-from cythrust.device_vector import DeviceVectorInt32, DeviceVectorFloat32
+from cythrust.device_vector import (DeviceVectorInt32, DeviceVectorFloat32,
+                                    DeviceVectorUint32)
 from device.CAMIP import (evaluate_moves as d_evaluate_moves,
-                          minus_float as d_minus_float)
+                          minus_float as d_minus_float,
+                          slot_moves as d_slot_moves,
+                          extract_positions as d_extract_positions,
+                          copy_permuted_uint32 as d_copy_permuted_uint32,
+                          sum_xy_vectors as d_sum_xy_vectors,
+                          star_plus_2d as d_star_plus_2d,
+                          sum_permuted_float_by_key as
+                          d_sum_permuted_float_by_key,
+                          compute_block_group_keys as
+                          d_compute_block_group_keys,
+                          equal_count_uint32 as d_equal_count_uint32,
+                          sequence_int32 as d_sequence_int32,
+                          sort_netlist_keys as d_sort_netlist_keys,
+                          permuted_nonmatch_inclusive_scan_int32 as
+                          d_permuted_nonmatch_inclusive_scan_int32,
+                          assess_groups as d_assess_groups,
+                          )
 
 
 try:
@@ -317,27 +330,49 @@ class CAMIP(object):
          - Each net _(`self.e_c`)_.
          - The complete placement _(`self.theta`)_.
         '''
+        p_x = DeviceVectorInt32(self.p_x.size); p_x[:] = self.p_x
+        p_y = DeviceVectorInt32(self.p_y.size); p_y[:] = self.p_y
+        block_slot_keys = DeviceVectorUint32(self.block_slot_keys.size); block_slot_keys[:] = self.block_slot_keys
+        X_row = DeviceVectorInt32(self.X.row.size); X_row[:] = self.X.row
+        X_col = DeviceVectorInt32(self.X.col.size); X_col[:] = self.X.col
+        e_x = DeviceVectorFloat32(self._e_x.size); e_x[:] = self._e_x
+        e_x2 = DeviceVectorFloat32(self._e_x2.size); e_x2[:] = self._e_x2
+        e_y = DeviceVectorFloat32(self._e_y.size); e_y[:] = self._e_y
+        e_y2 = DeviceVectorFloat32(self._e_y2.size); e_y2[:] = self._e_y2
+        _block_keys = DeviceVectorInt32(self._block_keys.size)
+        e_c = DeviceVectorFloat32(self.e_c.size)
+        r_inv = DeviceVectorFloat32(self.r_inv.size); r_inv[:] = self.r_inv
+        omega_row = DeviceVectorInt32(self.omega_prime.col.size); omega_row[:] = self.omega_prime.row
+        omega_col = DeviceVectorInt32(self.omega_prime.col.size); omega_col[:] = self.omega_prime.col
+
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments.
         # Thrust `transform`.
-        extract_positions(self.block_slot_keys, self.p_x, self.p_y, self.s2p)
+        d_extract_positions(block_slot_keys, p_x, p_y, self.s2p)
 
         # Star+ vectors
         # Thrust `reduce_by_key`.
-        sum_xy_vectors(self.X.row, self.X.col, self.p_x, self.p_y, self._e_x,
-                       self._e_x2, self._e_y, self._e_y2, self._block_keys)
+        d_sum_xy_vectors(X_row, X_col, p_x, p_y, e_x, e_x2, e_y, e_y2, _block_keys)
 
         # `theta`: $\theta =$ total placement cost
         # Thrust `transform`.
-        self.theta = star_plus_2d(self.e_x, self.e_x2, self.e_y, self.e_y2,
-                                  self.r_inv, 1.59, self.e_c)
+        self.theta = d_star_plus_2d(e_x, e_x2, e_y, e_y2, r_inv, 1.59, e_c)
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
         # Thrust `reduce_by_key`.
-        N = sum_permuted_float_by_key(self.omega.row, self.e_c.ravel(),
-                                      self.omega.col, self._block_keys,
-                                      self._n_c)
+        _n_c = DeviceVectorFloat32(self._n_c.size); _n_c[:] = self._n_c
+        N = d_sum_permuted_float_by_key(omega_row, e_c, omega_col, _block_keys,
+                                        _n_c)
+
+        self.p_x[:] = p_x[:]
+        self.p_y[:] = p_y[:]
+        self._e_x[:self.e_x.size] = e_x[:]
+        self._e_x2[:self.e_x2.size] = e_x2[:]
+        self._e_y[:self.e_y.size] = e_y[:]
+        self._e_y2[:self.e_y2.size] = e_y2[:]
+        self.e_c[:] = e_c[:]
+        self._n_c[:self.n_c.size] = _n_c[:self.n_c.size]
         return self.theta
 
     @profile
@@ -360,20 +395,29 @@ class CAMIP(object):
         [1]: http://thrust.github.io/doc/group__transformations.html
         [2]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
         '''
+        block_slot_keys = DeviceVectorUint32(self.block_slot_keys.size); block_slot_keys[:] = self.block_slot_keys
+        block_slot_keys_prime = DeviceVectorUint32(self.block_slot_keys_prime.size)
         # TODO: Use C++ random number generator.
         np.random.seed(seed)
         # TODO: Implement pure C++ random VPR pattern generator.
         self.move_pattern = random_vpr_pattern(self.s2p,
                                                max_io_move=max_io_move,
                                                max_logic_move=max_logic_move)
+
         # Thrust `transform`.
-        slot_moves(self.block_slot_keys, self.block_slot_keys_prime,
-                   self.move_pattern)
+        d_slot_moves(block_slot_keys, block_slot_keys_prime, self.move_pattern)
+
 
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments, using Thrust `transform`.
-        extract_positions(self.block_slot_keys_prime, self.p_x_prime,
-                          self.p_y_prime, self.s2p)
+        p_x_prime = DeviceVectorInt32(self.p_x_prime.size); p_x_prime[:] = self.p_x_prime
+        p_y_prime = DeviceVectorInt32(self.p_y_prime.size); p_y_prime[:] = self.p_y_prime
+        d_extract_positions(block_slot_keys_prime, p_x_prime, p_y_prime,
+                            self.s2p)
+
+        self.block_slot_keys_prime[:] = block_slot_keys_prime[:]
+        self.p_x_prime[:] = p_x_prime[:]
+        self.p_y_prime[:] = p_y_prime[:]
 
     @profile
     def evaluate_moves(self):
@@ -418,17 +462,18 @@ class CAMIP(object):
         r_inv = DeviceVectorFloat32(self.r_inv.size); r_inv[:] = self.r_inv
         _block_keys = DeviceVectorInt32(self._block_keys.size)
         n_c_prime = DeviceVectorFloat32(self.omega_prime.data.size)
+        n_c = DeviceVectorFloat32(self.n_c.size); n_c[:] = self.n_c
+        delta_n = DeviceVectorFloat32(self.delta_n.size); delta_n[:] = self.delta_n
 
         d_evaluate_moves(row, col, p_x, p_x_prime, e_x, e_x2, p_y, p_y_prime,
                          e_y, e_y2, r_inv, 1.59, _block_keys, n_c_prime)
-        self.omega_prime.data[:self.n_c_prime.size] = n_c_prime[:self.n_c_prime.size]
 
         # Compute move-deltas using a Thrust `reduce_by_key` call over a
         # `transform` iterator.
-        n_c = DeviceVectorFloat32(self.n_c.size); n_c[:] = self.n_c
-        delta_n = DeviceVectorFloat32(self.delta_n.size); delta_n[:] = self.delta_n
         #minus_float(self.n_c_prime.ravel(), self.n_c, self.delta_n)
         d_minus_float(n_c_prime, n_c, delta_n)
+
+        self.omega_prime.data[:self.n_c_prime.size] = n_c_prime[:self.n_c_prime.size]
         self.delta_n[:] = delta_n[:]
 
     @profile
@@ -467,14 +512,22 @@ class CAMIP(object):
         [9]: http://www.sciencedirect.com/science/article/pii/B9780124159938000062#s0065
         '''
         # Thrust `transform`.
-        compute_block_group_keys(self.block_slot_keys,
-                                 self.block_slot_keys_prime,
-                                 self.block_group_keys,
-                                 self.s2p.total_slot_count)
+        block_slot_keys = DeviceVectorUint32(self.block_slot_keys.size); block_slot_keys[:] = self.block_slot_keys
+        block_slot_keys_prime = DeviceVectorUint32(self.block_slot_keys_prime.size); block_slot_keys_prime[:] = self.block_slot_keys_prime
+        block_group_keys = DeviceVectorInt32(self.block_group_keys.size); block_group_keys[:] = self.block_group_keys
+        block_group_keys_sorted = DeviceVectorInt32(self.block_group_keys.size)
+        delta_n = DeviceVectorFloat32(self.delta_n.size); delta_n[:] = self.delta_n
+        _block_keys = DeviceVectorInt32(self._block_keys.size)
+        _delta_s = DeviceVectorFloat32(self._delta_s.size)
+        _group_block_keys = DeviceVectorInt32(self._group_block_keys.size); _group_block_keys[:] = self._group_block_keys
+        _rejected_block_keys = DeviceVectorInt32(self.block_group_keys.size)
+
+        d_compute_block_group_keys(block_slot_keys, block_slot_keys_prime,
+                                   block_group_keys, self.s2p.total_slot_count)
 
         # Thrust `reduce`.
-        unmoved_count = equal_count_uint32(self.block_slot_keys,
-                                           self.block_slot_keys_prime)
+        unmoved_count = d_equal_count_uint32(block_slot_keys,
+                                             block_slot_keys_prime)
 
         # ## Packed block group keys ##
         #
@@ -484,37 +537,42 @@ class CAMIP(object):
         # the list of blocks belonging to groups of associated moves,
 
         # Thrust `sequence`.
-        sequence_int32(self._group_block_keys)
+        d_sequence_int32(_group_block_keys)
 
         # Thrust `sort_by_key`.
-        sort_netlist_keys(self.block_group_keys.copy(), self._group_block_keys)
+        block_group_keys_sorted[:] = block_group_keys[:]
+        d_sort_netlist_keys(block_group_keys_sorted, _group_block_keys)
 
-        group_block_keys = self._group_block_keys[:-unmoved_count]
-        if group_block_keys.size == 0:
+        if unmoved_count >= _group_block_keys.size:
             self.delta_s = self._delta_s[:0]
             return 0, np.empty(0)
-        packed_block_group_keys = (self._packed_block_group_keys
-                                   [:group_block_keys.size])
 
         # Thrust `inclusive_scan`.
-        permuted_nonmatch_inclusive_scan_int32(self.block_group_keys,
-                                               group_block_keys,
-                                               packed_block_group_keys)
+        output_size = _group_block_keys.size - unmoved_count
+        _packed_block_group_keys = DeviceVectorInt32(output_size)
+        d_permuted_nonmatch_inclusive_scan_int32(block_group_keys,
+                                                 _group_block_keys,
+                                                 _packed_block_group_keys)
 
         # Thrust `reduce_by_key` over a `permutation` iterator.
-        N = sum_permuted_float_by_key(packed_block_group_keys, self.delta_n,
-                                      group_block_keys, self._block_keys,
-                                      self._delta_s)
-        self.delta_s = self._delta_s[:N]
+        N = d_sum_permuted_float_by_key(_packed_block_group_keys, delta_n,
+                                        _group_block_keys, _block_keys,
+                                        _delta_s)
 
         # Thrust `copy_if`.
-        N = assess_groups(temperature, group_block_keys,
-                          packed_block_group_keys, self.delta_s,
-                          self._rejected_block_keys)
-        rejected_block_keys = self._rejected_block_keys[:N]
+        N = d_assess_groups(temperature, _group_block_keys,
+                            _packed_block_group_keys, _delta_s,
+                            _rejected_block_keys)
+
+        self.block_group_keys[:] = block_group_keys[:]
+        self._group_block_keys[:] = _group_block_keys[:]
+        self._delta_s[:N] = _delta_s[:N]
+        self.delta_s = self._delta_s[:N]
+        self._rejected_block_keys[:N] = _rejected_block_keys[:N]
 
         #      (moves evaluated)                , (moves rejected)
-        return (self.block_slot_keys.size - unmoved_count), rejected_block_keys
+        return ((self.block_slot_keys.size - unmoved_count),
+                self._rejected_block_keys[:N])
 
     @profile
     def apply_groups(self, rejected_move_block_keys):
@@ -536,8 +594,15 @@ class CAMIP(object):
             return
 
         # Thrust `transform`.
-        copy_permuted_uint32(self.block_slot_keys, self.block_slot_keys_prime,
-                             rejected_move_block_keys)
+        block_slot_keys = DeviceVectorUint32(self.block_slot_keys.size); block_slot_keys[:] = self.block_slot_keys
+        block_slot_keys_prime = DeviceVectorUint32(self.block_slot_keys_prime.size); block_slot_keys_prime[:] = self.block_slot_keys_prime
+        _rejected_block_keys = DeviceVectorInt32(rejected_move_block_keys.size); _rejected_block_keys[:] = rejected_move_block_keys
+
+        d_copy_permuted_uint32(block_slot_keys, block_slot_keys_prime,
+                               _rejected_block_keys)
+
+        self.block_slot_keys_prime[:] = block_slot_keys_prime[:]
+
         self.block_slot_keys, self.block_slot_keys_prime = (
             self.block_slot_keys_prime, self.block_slot_keys)
 
