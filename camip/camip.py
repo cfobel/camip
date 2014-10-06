@@ -45,6 +45,11 @@ from .CAMIP import (evaluate_moves, VPRAutoSlotKeyTo2dPosition,
                     permuted_nonmatch_inclusive_scan_int32, assess_groups,
                     copy_permuted_uint32, pack_io)
 
+from cythrust.device_vector import DeviceVectorInt32, DeviceVectorFloat32
+from device.CAMIP import (evaluate_moves as d_evaluate_moves,
+                          minus_float as d_minus_float)
+
+
 try:
     profile
 except:
@@ -147,7 +152,8 @@ class MatrixNetlist(object):
         packed_keys = np.empty_like(net_keys)
         packed_keys[0] = 1
         packed_keys[1:] = (net_keys[1:] != net_keys[:-1])
-        self.local_connections['block_type'] = block_types[self.local_connections['block_key'].ravel()]
+        self.local_connections['block_type'] = \
+            block_types[self.local_connections['block_key'].ravel()]
         self.local_connections['net_key'] = np.cumsum(packed_keys) - 1
 
         block_connections = self.local_connections.copy().sort(columns=
@@ -393,16 +399,37 @@ class CAMIP(object):
         [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
         '''
         # Thrust `reduce_by_key` over a `transform` iterator.
-        evaluate_moves(self.omega_prime.row,
-                       self.omega_prime.col,
-                       self.p_x, self.p_x_prime, self.e_x, self.e_x2,
-                       self.p_y, self.p_y_prime, self.e_y, self.e_y2,
-                       self.r_inv, 1.59, self._block_keys,
-                       self.omega_prime.data)
+        #evaluate_moves(self.omega_prime.row,
+                       #self.omega_prime.col,
+                       #self.p_x, self.p_x_prime, self.e_x, self.e_x2,
+                       #self.p_y, self.p_y_prime, self.e_y, self.e_y2,
+                       #self.r_inv, 1.59, self._block_keys,
+                       #self.omega_prime.data)
+        row = DeviceVectorInt32(self.omega_prime.col.size); row[:] = self.omega_prime.row
+        col = DeviceVectorInt32(self.omega_prime.col.size); col[:] = self.omega_prime.col
+        p_x = DeviceVectorInt32(self.p_x.size); p_x[:] = self.p_x
+        p_x_prime = DeviceVectorInt32(self.p_x_prime.size); p_x_prime[:] = self.p_x_prime
+        e_x = DeviceVectorFloat32(self.e_x.size); e_x[:] = self.e_x
+        e_x2 = DeviceVectorFloat32(self.e_x2.size); e_x2[:] = self.e_x2
+        p_y = DeviceVectorInt32(self.p_y.size); p_y[:] = self.p_y
+        p_y_prime = DeviceVectorInt32(self.p_y_prime.size); p_y_prime[:] = self.p_y_prime
+        e_y = DeviceVectorFloat32(self.e_y.size); e_y[:] = self.e_y
+        e_y2 = DeviceVectorFloat32(self.e_y2.size); e_y2[:] = self.e_y2
+        r_inv = DeviceVectorFloat32(self.r_inv.size); r_inv[:] = self.r_inv
+        _block_keys = DeviceVectorInt32(self._block_keys.size)
+        n_c_prime = DeviceVectorFloat32(self.omega_prime.data.size)
+
+        d_evaluate_moves(row, col, p_x, p_x_prime, e_x, e_x2, p_y, p_y_prime,
+                         e_y, e_y2, r_inv, 1.59, _block_keys, n_c_prime)
+        self.omega_prime.data[:self.n_c_prime.size] = n_c_prime[:self.n_c_prime.size]
 
         # Compute move-deltas using a Thrust `reduce_by_key` call over a
         # `transform` iterator.
-        minus_float(self.n_c_prime.ravel(), self.n_c, self.delta_n)
+        n_c = DeviceVectorFloat32(self.n_c.size); n_c[:] = self.n_c
+        delta_n = DeviceVectorFloat32(self.delta_n.size); delta_n[:] = self.delta_n
+        #minus_float(self.n_c_prime.ravel(), self.n_c, self.delta_n)
+        d_minus_float(n_c_prime, n_c, delta_n)
+        self.delta_n[:] = delta_n[:]
 
     @profile
     def assess_groups(self, temperature):
