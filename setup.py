@@ -1,3 +1,4 @@
+import numpy as np
 from path_helpers import path
 from distutils.core import setup
 from distutils.extension import Extension
@@ -13,7 +14,8 @@ ext_modules = [Extension(f[:-4].replace('/', '.'), [f],
                          include_dirs=[path('~/local/include').expand(),
                                        '/usr/local/cuda-6.5/include',
                                        pkg_resources
-                                       .resource_filename('cythrust', '')],
+                                       .resource_filename('cythrust', ''),
+                                       np.get_include()],
                          define_macros=[('THRUST_DEVICE_SYSTEM',
                                          'THRUST_DEVICE_SYSTEM_CPP')])
                for f in pyx_files]
