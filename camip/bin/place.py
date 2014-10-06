@@ -67,7 +67,7 @@ def save_placement(net_file_namebase, block_positions, place_stats,
         parent_dir.makedirs_p()
     print 'writing output to: %s' % output_path
 
-    h5f = ts.openFile(output_file_name, mode='w', filters=filters)
+    h5f = ts.openFile(output_path, mode='w', filters=filters)
 
     net_file_results = h5f.createGroup(h5f.root, net_file_namebase,
                                        title='Placement results for %s CAMIP '
