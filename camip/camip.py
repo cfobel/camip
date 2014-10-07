@@ -36,6 +36,10 @@ from collections import OrderedDict
 
 from cythrust.si_prefix import si_format
 from cyplace_experiments.data import open_netlists_h5f
+from cyplace_experiments.data.connections_table import (get_connections_table,
+                                                        INPUT_BLOCK,
+                                                        OUTPUT_BLOCK,
+                                                        LOGIC_BLOCK)
 from .CAMIP import (VPRAutoSlotKeyTo2dPosition, random_vpr_pattern,
                     cAnnealSchedule, get_std_dev, pack_io,
                     # Only used in class constructors _(not in main methods)_.
@@ -72,11 +76,10 @@ except:
 
 
 class VPRSchedule(object):
-    def __init__(self, s2p, inner_num, netlist, placer=None):
+    def __init__(self, s2p, inner_num, block_count, placer=None):
         self.s2p = s2p
         self.inner_num = inner_num
-        self.moves_per_temperature = inner_num * pow(netlist.block_count,
-                                                     1.33333)
+        self.moves_per_temperature = inner_num * pow(block_count, 1.33333)
         rlim = min(*self.s2p.extent)
         if placer is not None:
             start_temperature = self.get_starting_temperature(placer)
@@ -90,8 +93,8 @@ class VPRSchedule(object):
         total_moves = 0
 
         if move_count is None:
-            move_count = placer.netlist.block_count
-        block_count = int(placer.netlist.block_count)
+            move_count = placer.block_count
+        block_count = int(placer.block_count)
 
         while total_moves < move_count:
             placer.propose_moves(np.random.randint(100000))
@@ -125,7 +128,7 @@ class VPRSchedule(object):
         states = []
         total_move_count = 0
         while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
-               placer.netlist.C.shape[1]):
+               placer.net_count):
             start = time.time()
             total_moves, rejected_moves = self.outer_iteration(placer)
             end = time.time()
@@ -151,65 +154,6 @@ class VPRSchedule(object):
         return states
 
 
-class MatrixNetlist(object):
-    def __init__(self, connections, block_types):
-        CLOCK_PIN = 5
-        self.connections = connections
-        self.global_nets = (connections[connections['pin_key'] ==
-                                        CLOCK_PIN]['net_key'].unique())
-        global_block_mask = (connections['net_key'].isin(self.global_nets) &
-                             (connections['pin_key'] == 0))
-        self.global_blocks = (connections[global_block_mask]['block_key']
-                              .unique().astype(dtype=np.int32))
-
-        # Filter out connections that correspond to a global net.
-        self.local_connections = connections[~connections['net_key']
-                                             .isin(self.global_nets)]
-        net_keys = self.local_connections['net_key'].copy().ravel()
-        packed_keys = np.empty_like(net_keys)
-        packed_keys[0] = 1
-        packed_keys[1:] = (net_keys[1:] != net_keys[:-1])
-        self.local_connections['block_type'] = \
-            block_types[self.local_connections['block_key'].ravel()]
-        self.local_connections['net_key'] = np.cumsum(packed_keys) - 1
-
-        block_connections = self.local_connections.copy().sort(columns=
-                                                               ['block_key'])
-        block_keys = block_connections['block_key'].copy().ravel()
-        packed_keys = np.empty_like(block_keys)
-        packed_keys[0] = 1
-        packed_keys[1:] = (block_keys[1:] != block_keys[:-1])
-        block_connections['block_key'] = np.cumsum(packed_keys) - 1
-        self.local_connections = block_connections.sort(columns=['net_key'])
-        self.block_types = (self.local_connections
-                            .drop_duplicates(cols='block_key')
-                            .sort(['block_key',
-                                   'block_type'])['block_type'].copy())
-
-        b_types = OrderedDict([(v, i) for i, v in enumerate(('.clb', '.input',
-                                                             '.output'))])
-        keys = np.sort(np.array(map(b_types.__getitem__, self.block_types),
-                                dtype=np.int32))
-        counts = np.ones_like(keys, dtype=np.float32)
-        N = sum_float_by_key(keys, counts, keys, counts)
-        self.block_type_counts = OrderedDict(zip(b_types.keys(),
-                                                 counts[:N].astype(int)))
-        self.block_count = counts[:N].sum()
-        self.non_global_block_count = self.block_count - self.global_nets.size
-
-        self.P = sparse.coo_matrix((self.local_connections['pin_key'],
-                                    (self.local_connections['block_key'],
-                                     self.local_connections['net_key'])),
-                                   dtype=np.uint8)
-        self.C = sparse.coo_matrix((np.ones(len(self.local_connections)),
-                                    (self.local_connections['block_key'],
-                                     self.local_connections['net_key'])),
-                                   dtype=np.uint8)
-        self.r = self.C.astype(np.uint32).sum(axis=0)
-        self.net_ones = np.matrix([np.ones(self.C.shape[0])], dtype=np.uint32)
-        assert((self.net_ones * self.C == self.r).all())
-
-
 class DeviceSparseMatrix(object):
     def __init__(self, row, col, data=None):
         self.row = DeviceVectorInt32(row.size)
@@ -229,42 +173,44 @@ class DeviceSparseMatrix(object):
 
 
 class CAMIP(object):
-    def __init__(self, netlist, io_capacity=3):
-        self.netlist = netlist
+    def __init__(self, connections_table, io_capacity=3):
         self.io_capacity = io_capacity
 
-        self.io_count = np.sum(netlist.block_type_counts[t]
-                               for t in ('.input', '.output'))
-        self.logic_count = netlist.block_type_counts['.clb']
+        self.io_count = connections_table.io_count
+        self.logic_count = connections_table.logic_count
+        self.block_count = self.io_count + self.logic_count
+        self.net_count = connections_table.net_count
+
         self.s2p = VPRAutoSlotKeyTo2dPosition(self.io_count, self.logic_count,
                                               io_capacity)
         self.slot_block_keys = DeviceVectorUint32(self.s2p.total_slot_count)
-        self.slot_block_keys[:] = netlist.block_count
+        self.slot_block_keys[:] = self.block_count
 
         # Fill IO slots.
-        self.slot_block_keys[:self.io_count] = np.where(netlist.block_types
-                                                        .isin(('.input',
-                                                               '.output')))[0]
+        self.slot_block_keys[:self.io_count] = \
+            connections_table.io_block_keys()
 
         # Fill logic slots.
         logic_start = self.s2p.io_slot_count
         logic_end = logic_start + self.logic_count
-        self.slot_block_keys[logic_start:logic_end] = np.where(
-            netlist.block_types == '.clb')[0]
+        self.slot_block_keys[logic_start:logic_end] = \
+            connections_table.logic_block_keys()
 
         # Create reverse-mapping, from each block-key to the permutation slot
         # the block occupies.
-        self.block_slot_keys = DeviceVectorUint32(netlist.block_count)
-        self.block_slot_moves = DeviceVectorInt32(netlist.block_count)
-        self.block_slot_keys_prime = DeviceVectorUint32(netlist.block_count)
+        self.block_slot_keys = DeviceVectorUint32(self.block_count)
+        self.block_slot_moves = DeviceVectorInt32(self.block_count)
+        self.block_slot_keys_prime = DeviceVectorUint32(self.block_count)
         self._sync_slot_block_keys_to_block_slot_keys()
 
-        self.p_x = DeviceVectorInt32(netlist.block_count)
-        self.p_y = DeviceVectorInt32(netlist.block_count)
-        self.p_x_prime = DeviceVectorInt32(netlist.block_count)
-        self.p_y_prime = DeviceVectorInt32(netlist.block_count)
+        self.p_x = DeviceVectorInt32(self.block_count)
+        self.p_y = DeviceVectorInt32(self.block_count)
+        self.p_x_prime = DeviceVectorInt32(self.block_count)
+        self.p_y_prime = DeviceVectorInt32(self.block_count)
 
-        self.X = DeviceSparseMatrix(netlist.C.row, netlist.C.col)
+        self.X = DeviceSparseMatrix(
+            connections_table.connections.block_key,
+            connections_table.connections.net_key)
 
         self._e_x = DeviceVectorFloat32(self.X.col.size)
         self._e_x2 = DeviceVectorFloat32(self.X.col.size)
@@ -272,27 +218,31 @@ class CAMIP(object):
         self._e_y2 = DeviceVectorFloat32(self.X.col.size)
         self._e_c = DeviceVectorFloat32(self.X.col.size)
 
-        self.omega = DeviceSparseMatrix(netlist.C.row, netlist.C.col)
-        self.omega_prime = DeviceSparseMatrix(netlist.C.row, netlist.C.col,
-                                              np.ones_like(netlist.C.data,
-                                                           dtype=np.float32))
-        self._block_keys = DeviceVectorInt32(netlist.C.row.size)
-        self.net_count = d_sum_float_by_key(self.omega_prime.col,
-                                            self.omega_prime.data,
-                                            self._block_keys,
-                                            self.omega_prime.data)
+        self.omega = DeviceSparseMatrix(
+            connections_table.connections.block_key,
+            connections_table.connections.net_key)
+        self.omega_prime = DeviceSparseMatrix(
+            connections_table.connections.block_key,
+            connections_table.connections.net_key,
+            np.ones(len(connections_table), dtype=np.float32))
+        self._block_keys = DeviceVectorInt32(len(connections_table))
+
+        d_sort_netlist_keys(self.X.col, self.X.row)
         d_sort_netlist_keys(self.omega.row, self.omega.col)
+
         self.omega_prime.row[:] = self.omega.row[:]
         self.omega_prime.col[:] = self.omega.col[:]
 
         self.r_inv = DeviceVectorFloat32(self.net_count)
-        self.r_inv[:] = np.reciprocal(netlist.r.A.ravel().astype(np.float32))
-        self.block_group_keys = DeviceVectorInt32(netlist.block_count)
-        self.block_group_keys_sorted = DeviceVectorInt32(netlist.block_count)
+        d_sum_float_by_key(self.X.col, self.omega_prime.data, self._block_keys,
+                           self.omega_prime.data)
+        self.r_inv[:] = np.reciprocal(self.omega_prime.data[:self.net_count])
+        self.block_group_keys = DeviceVectorInt32(self.block_count)
+        self.block_group_keys_sorted = DeviceVectorInt32(self.block_count)
         self._group_block_keys = DeviceVectorInt32(self.block_group_keys.size)
-        self._delta_s = DeviceVectorFloat32(netlist.block_count)
-        self._n_c = DeviceVectorFloat32(netlist.C.row.size)
-        self.delta_n = DeviceVectorFloat32(netlist.block_count)
+        self._delta_s = DeviceVectorFloat32(self.block_count)
+        self._n_c = DeviceVectorFloat32(len(connections_table))
+        self.delta_n = DeviceVectorFloat32(self.block_count)
         self._packed_block_group_keys = DeviceVectorInt32(self
                                                           ._group_block_keys
                                                           .size)
@@ -320,16 +270,15 @@ class CAMIP(object):
         shuffling the contents of the permutation slots)_.
         '''
         slot_block_keys = self.slot_block_keys[:]
-        slot_block_keys[:] = self.netlist.block_count
-        slot_block_keys[self.block_slot_keys[:]] = xrange(self.netlist
-                                                          .block_count)
+        slot_block_keys[:] = self.block_count
+        slot_block_keys[self.block_slot_keys[:]] = xrange(self.block_count)
         self.slot_block_keys[:] = slot_block_keys[:]
 
     def _sync_slot_block_keys_to_block_slot_keys(self):
         '''
         Update `block_slot_keys` based on `slot_block_keys`.
         '''
-        occupied = np.where(self.slot_block_keys[:] < self.netlist.block_count)
+        occupied = np.where(self.slot_block_keys[:] < self.block_count)
         block_slot_keys = self.block_slot_keys[:]
         slot_block_keys = self.slot_block_keys[:]
         block_slot_keys[slot_block_keys[occupied]] = occupied[0]
@@ -571,34 +520,3 @@ class CAMIP(object):
         pack_io(io_slot_block_keys, self.io_capacity)
         self.slot_block_keys[:self.s2p.io_slot_count] = \
             io_slot_block_keys[:]
-
-
-def main():
-    connections = pd.DataFrame(np.array([[0, 0, 0],
-                                         [1, 1, 0],
-                                         [2, 0, 0], [2, 2, 4],
-                                         [3, 0, 0], [3, 1, 1], [3, 7, 2], [3, 3, 4],
-                                         [4, 0, 0], [4, 1, 1], [4, 4, 4],
-                                         [5, 2, 0], [5, 3, 1], [5, 5, 4], [5, 10, 5],
-                                         [6, 3, 0], [6, 6, 4],
-                                         [7, 4, 0], [7, 7, 4], [7, 10, 5],
-                                         [8, 5, 0], [8, 0, 1], [8, 8, 4],
-                                         [9, 6, 0], [9, 7, 1], [9, 9, 4], [9, 10, 5],
-                                         [10, 8, 0],
-                                         [11, 6, 0],
-                                         [12, 9, 0], [13, 10, 0]]),
-                               columns=['block_key', 'net_key', 'pin_key'])
-    return MatrixNetlist(connections, 2 * ['.input'] + 8 * ['.clb'] + 3 *
-                         ['.output'] + ['.input'])
-
-
-if __name__ == '__main__':
-    netlist = main()
-    p = CAMIP(netlist)
-
-    netlists_h5f = open_netlists_h5f()
-    netlist_group = netlists_h5f.root.netlists.ex5p
-    connections = pd.DataFrame(netlist_group.connections[:])
-    block_type_labels = netlist_group.block_type_counts.cols.label[:]
-    ex5p = MatrixNetlist(connections,
-                         block_type_labels[netlist_group.block_types[:]])

@@ -5,25 +5,20 @@ from path_helpers import path
 from table_layouts import (get_PLACEMENT_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_DATAFRAME_LAYOUT)
-from camip import MatrixNetlist, CAMIP, VPRSchedule
+from camip import CAMIP, VPRSchedule
 from camip.device.CAMIP import extract_positions
 import numpy as np
 import tables as ts
 import pandas as pd
 from cyplace_experiments.data import open_netlists_h5f
+from cyplace_experiments.data.connections_table import ConnectionsTable
 
 
 def place(net_file_namebase, seed, inner_num=1.):
-    netlists_h5f = open_netlists_h5f()
-    netlist_group = getattr(netlists_h5f.root.netlists, net_file_namebase)
-    connections = pd.DataFrame(netlist_group.connections[:])
-    block_type_labels = netlist_group.block_type_counts.cols.label[:]
-    netlist = MatrixNetlist(connections,
-                            block_type_labels[netlist_group.block_types[:]])
-    placer = CAMIP(netlist)
+    placer = CAMIP(ConnectionsTable(net_file_namebase))
     placer.shuffle_placement()
     print placer.evaluate_placement()
-    schedule = VPRSchedule(placer.s2p, inner_num, placer.netlist, placer)
+    schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer)
     print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature
     states = schedule.run(placer)
 
