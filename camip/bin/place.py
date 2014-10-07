@@ -14,18 +14,18 @@ import pandas as pd
 from cyplace_experiments.data.connections_table import ConnectionsTable
 
 
-def place(net_file_namebase, seed, inner_num=1., timing=False,
+def place(net_file_namebase, seed, io_capacity=3, inner_num=1., timing=False,
           draw_enabled=False, critical_path_only=False,
           wire_length_factor=0.5):
     connections_table = ConnectionsTable.from_net_list_name(net_file_namebase)
     if timing or critical_path_only:
         if timing:
             critical_path_only = False
-        placer = CAMIPTiming(connections_table,
+        placer = CAMIPTiming(connections_table, io_capacity=3,
                              timing_cost_disabled=critical_path_only,
                              wire_length_factor=wire_length_factor)
     else:
-        placer = CAMIP(connections_table)
+        placer = CAMIP(connections_table, io_capacity=3)
     placer.shuffle_placement()
     print placer.evaluate_placement()
     schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer,
@@ -155,6 +155,7 @@ def parse_args(argv=None):
     parser.add_argument('-w', '--wire-length-factor', type=float, default=0.5,
                         help='When timing is enabled, fraction of emphasis to '
                         'place on wire-length _(vs. timing)_.')
+    parser.add_argument('-I', '--io-capacity', type=int, default=3)
     parser.add_argument('-s', '--seed', default=np.random.randint(100000),
                         type=int)
     parser.add_argument(dest='net_file_namebase')
@@ -169,8 +170,9 @@ if __name__ == '__main__':
 
     np.random.seed(args.seed)
     placer, place_stats = place(args.net_file_namebase, args.seed,
-                                args.inner_num, args.timing, args.draw_enabled,
-                                args.critical_path, args.wire_length_factor)
+                                args.io_capacity, args.inner_num, args.timing,
+                                args.draw_enabled, args.critical_path,
+                                args.wire_length_factor)
 
     extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
                       placer.s2p)
