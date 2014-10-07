@@ -8,7 +8,7 @@ cimport numpy as np
 
 from cythrust.device_vector cimport (DeviceVectorInt32, DeviceVectorUint32,
                                      DeviceVectorFloat32)
-from cythrust.thrust.copy cimport copy_n, copy_if_w_stencil
+from cythrust.thrust.copy cimport copy_n, copy_if_w_stencil, copy
 from cythrust.thrust.device_vector cimport device_vector
 from cythrust.thrust.fill cimport fill_n
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
@@ -39,11 +39,6 @@ cpdef evaluate_moves(DeviceVectorInt32 row, DeviceVectorInt32 col,
                      DeviceVectorFloat32 r_inv, float beta,
                      DeviceVectorInt32 reduced_keys,
                      DeviceVectorFloat32 reduced_values):
-    cdef size_t count = <size_t>reduced_values.size
-    cdef int k
-    cdef int i
-    cdef int j
-
     cdef plus[float] plus2
     cdef unpack_binary_args[plus[float]] *plus2_tuple = \
         new unpack_binary_args[plus[float]](plus2)
@@ -110,8 +105,17 @@ cpdef extract_positions(DeviceVectorUint32 slot_keys, DeviceVectorInt32 p_x,
               deref(s2p._data))
 
 
+def copy_int32(DeviceVectorInt32 a, DeviceVectorInt32 b):
+    '''
+    Equivalent to:
+
+        b[:] = a[:]
+    '''
+    copy(a._vector.begin(), a._vector.end(), b._vector.begin())
+
+
 def copy_permuted_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b,
-                         DeviceVectorInt32 index):
+                         DeviceVectorInt32 index, size_t index_count):
     '''
     Equivalent to:
 
@@ -120,7 +124,7 @@ def copy_permuted_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b,
     where index is an array of indexes corresponding to positions to copy from
     `a` to `b`.
     '''
-    cdef size_t count = index.size
+    cdef size_t count = index_count
 
     copy_n(make_permutation_iterator(a._vector.begin(), index._vector.begin()),
            count, make_permutation_iterator(b._vector.begin(),
@@ -166,7 +170,7 @@ cpdef star_plus_2d(DeviceVectorFloat32 e_x, DeviceVectorFloat32 e_x2,
                    DeviceVectorFloat32 e_y, DeviceVectorFloat32 e_y2,
                    DeviceVectorFloat32 r_inv, float beta,
                    DeviceVectorFloat32 e_c):
-    cdef size_t count = e_c.size
+    cdef size_t count = r_inv.size
 
     cdef c_star_plus_2d[float] *_star_plus = new c_star_plus_2d[float](beta)
     cdef unpack_quinary_args[c_star_plus_2d[float]] *_star_plus_2d = \
@@ -186,9 +190,10 @@ cpdef sum_permuted_float_by_key(DeviceVectorInt32 keys,
                                 DeviceVectorFloat32 elements,
                                 DeviceVectorInt32 index,
                                 DeviceVectorInt32 reduced_keys,
-                                DeviceVectorFloat32 reduced_values):
+                                DeviceVectorFloat32 reduced_values,
+                                size_t key_count):
     cdef size_t count = <device_vector[int32_t].iterator>accumulate_by_key(
-        keys._vector.begin(), keys._vector.begin() + <size_t>keys.size,
+        keys._vector.begin(), keys._vector.begin() + key_count,
         make_permutation_iterator(elements._vector.begin(),
                                   index._vector.begin()),
         reduced_keys._vector.begin(), reduced_values._vector.begin()).first - reduced_keys._vector.begin()
@@ -246,12 +251,13 @@ cpdef sort_netlist_keys(DeviceVectorInt32 keys1, DeviceVectorInt32 keys2):
 
 cpdef permuted_nonmatch_inclusive_scan_int32(DeviceVectorInt32 elements,
                                              DeviceVectorInt32 index,
-                                             DeviceVectorInt32 output):
+                                             DeviceVectorInt32 output,
+                                             size_t index_count):
     cdef not_equal_to[int32_t] _not_equal_to
     cdef unpack_binary_args[not_equal_to[int32_t]] *unpacked_not_equal_to = \
         new unpack_binary_args[not_equal_to[int32_t]](_not_equal_to)
     cdef identity[int32_t] to_int32
-    cdef size_t count = output.size - 1
+    cdef size_t count = index_count - 1
 
     fill_n(output._vector.begin(), 1, 0)
     inclusive_scan(
@@ -281,7 +287,7 @@ cpdef permuted_nonmatch_inclusive_scan_int32(DeviceVectorInt32 elements,
 def assess_groups(float temperature, DeviceVectorInt32 group_block_keys,
                   DeviceVectorInt32 packed_block_group_keys,
                   DeviceVectorFloat32 group_delta_costs,
-                  DeviceVectorInt32 output):
+                  DeviceVectorInt32 output, size_t key_count):
     '''
     Given the specified annealing temperature and the delta cost for applying
     each group of associated-moves:
@@ -301,7 +307,7 @@ def assess_groups(float temperature, DeviceVectorInt32 group_block_keys,
         rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
         return rejected_block_keys.size
     '''
-    cdef size_t count = packed_block_group_keys.size
+    cdef size_t count = key_count
     cdef assess_group[float] *_assess_group = \
         new assess_group[float](temperature)
     cdef unpack_binary_args[assess_group[float]] *unpack_assess_group = \
@@ -321,3 +327,12 @@ def assess_groups(float temperature, DeviceVectorInt32 group_block_keys,
                 deref(unpack_assess_group)),
             packed_block_group_keys._vector.begin()), output._vector.begin(),
         _logical_not) - output._vector.begin())
+
+
+cpdef sum_float_by_key(DeviceVectorInt32 keys, DeviceVectorFloat32 values,
+                       DeviceVectorInt32 reduced_keys, DeviceVectorFloat32 reduced_values):
+    cdef size_t count = (<device_vector[int32_t].iterator>accumulate_by_key(
+        keys._vector.begin(), keys._vector.begin() + <size_t>keys.size,
+        values._vector.begin(), reduced_keys._vector.begin(),
+        reduced_values._vector.begin()).first - reduced_keys._vector.begin())
+    return count
