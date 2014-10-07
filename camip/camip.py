@@ -529,6 +529,7 @@ class CAMIP(object):
         pack_io(io_slot_block_keys, self.io_capacity)
         self.slot_block_keys[:self.s2p.io_slot_count] = \
             io_slot_block_keys[:]
+        self._sync_slot_block_keys_to_block_slot_keys()
 
     def get_state(self):
         return {}
