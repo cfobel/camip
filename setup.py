@@ -8,10 +8,11 @@ import pkg_resources
 import version
 
 
-pyx_files = ['camip/CAMIP.pyx']
+pyx_files = ['camip/CAMIP.pyx', 'camip/device/CAMIP.pyx']
 ext_modules = [Extension(f[:-4].replace('/', '.'), [f],
                          extra_compile_args=['-O3', '-msse3', '-std=c++0x'],
-                         include_dirs=[path('~/local/include').expand(),
+                         include_dirs=['camip',
+                                       path('~/local/include').expand(),
                                        '/usr/local/cuda-6.5/include',
                                        pkg_resources
                                        .resource_filename('cythrust', ''),

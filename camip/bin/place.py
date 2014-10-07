@@ -6,7 +6,7 @@ from table_layouts import (get_PLACEMENT_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_DATAFRAME_LAYOUT)
 from camip import MatrixNetlist, CAMIP, VPRSchedule
-from camip.CAMIP import extract_positions
+from camip.device.CAMIP import extract_positions
 import numpy as np
 import tables as ts
 import pandas as pd
@@ -156,10 +156,11 @@ if __name__ == '__main__':
 
     extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
                       placer.s2p)
-    p_z = np.zeros_like(placer.p_x)
+    p_z = np.zeros(placer.p_x.size, dtype=np.uint32)
     p_z[:placer.s2p.io_count] = (placer.block_slot_keys[:placer.s2p.io_count] %
                                  placer.io_capacity)
-    block_positions = np.array([placer.p_x, placer.p_y, p_z], dtype='uint32').T
+    block_positions = np.array([placer.p_x[:], placer.p_y[:], p_z],
+                               dtype='uint32').T
     save_placement(args.net_file_namebase, block_positions, place_stats,
                    output_path=args.output_path, output_dir=args.output_dir,
                    inner_num=args.inner_num, seed=args.seed)
