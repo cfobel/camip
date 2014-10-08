@@ -79,7 +79,8 @@ except:
 
 
 class VPRSchedule(object):
-    def __init__(self, s2p, inner_num, block_count, placer=None):
+    def __init__(self, s2p, inner_num, block_count, placer=None,
+                 draw_enabled=False):
         self.s2p = s2p
         self.inner_num = inner_num
         self.moves_per_temperature = inner_num * pow(block_count, 1.33333)
@@ -89,6 +90,7 @@ class VPRSchedule(object):
         else:
             start_temperature = 0.
         self.anneal_schedule = cAnnealSchedule(rlim, start_temperature)
+        self.draw_enabled = draw_enabled
 
     def get_starting_temperature(self, placer, move_count=None):
         deltas_sum = 0.
@@ -121,6 +123,8 @@ class VPRSchedule(object):
             non_zero_moves, rejected = placer.run_iteration(
                 np.random.randint(1000000), self.anneal_schedule.temperature,
                 max_logic_move=(max_logic_move, max_logic_move))
+            if self.draw_enabled and hasattr(placer, 'draw'):
+                placer.draw()
             total_moves += non_zero_moves
             rejected_moves += rejected
         success_ratio = (total_moves - rejected_moves) / float(total_moves)
@@ -130,7 +134,6 @@ class VPRSchedule(object):
     def run(self, placer):
         states = []
         total_move_count = 0
-        import pudb; pudb.set_trace()
         while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
                placer.net_count):
             start = time.time()

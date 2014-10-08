@@ -17,7 +17,9 @@ struct delay {
     size_t stride = 0;
     size_t offset = 0;
 
-    if (delay_type == 0) {
+    if (delta_x == 0 && delta_y == 0) {
+      return 0;
+    } else if (delay_type == 0) {
       /* Delay is logic-to-logic. */
       stride = ncols;
       offset = 0;

@@ -11,16 +11,19 @@ from camip.device.CAMIP import extract_positions
 import numpy as np
 import tables as ts
 import pandas as pd
-from cyplace_experiments.data import open_netlists_h5f
 from cyplace_experiments.data.connections_table import ConnectionsTable
 
 
-def place(net_file_namebase, seed, inner_num=1.):
-    #placer = CAMIP(ConnectionsTable(net_file_namebase))
-    placer = CAMIPTiming(net_file_namebase)
+def place(net_file_namebase, seed, inner_num=1., timing=False,
+          draw_enabled=False):
+    if timing:
+        placer = CAMIPTiming(net_file_namebase)
+    else:
+        placer = CAMIP(ConnectionsTable(net_file_namebase))
     placer.shuffle_placement()
     print placer.evaluate_placement()
-    schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer)
+    schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer,
+                           draw_enabled=draw_enabled)
     print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature
     states = schedule.run(placer)
 
@@ -134,7 +137,9 @@ def parse_args(argv=None):
     mutex_group = parser.add_mutually_exclusive_group()
     mutex_group.add_argument('-o', '--output_path', default=None, type=path)
     mutex_group.add_argument('-d', '--output_dir', default=None, type=path)
+    parser.add_argument('-e', '--draw-enabled', action='store_true')
     parser.add_argument('-i', '--inner-num', type=float, default=1.)
+    parser.add_argument('-t', '--timing', action='store_true')
     parser.add_argument('-s', '--seed', default=np.random.randint(100000),
                         type=int)
     parser.add_argument(dest='net_file_namebase')
@@ -149,7 +154,7 @@ if __name__ == '__main__':
 
     np.random.seed(args.seed)
     placer, place_stats = place(args.net_file_namebase, args.seed,
-                                args.inner_num)
+                                args.inner_num, args.timing, args.draw_enabled)
 
     extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
                       placer.s2p)
@@ -161,3 +166,5 @@ if __name__ == '__main__':
     save_placement(args.net_file_namebase, block_positions, place_stats,
                    output_path=args.output_path, output_dir=args.output_dir,
                    inner_num=args.inner_num, seed=args.seed)
+    if args.draw_enabled:
+        raw_input()

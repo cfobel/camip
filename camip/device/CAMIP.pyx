@@ -495,3 +495,12 @@ cpdef arrival_delays(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
         reduce_compare, minmax_f).first) - reduced_keys._vector.begin())
     del unpacked_arrival_delay
     return count
+
+
+cpdef sort_delay_matrix(DeviceVectorInt32 keys, DeviceVectorInt32 values,
+                        DeviceVectorInt8 delay_type):
+    sort_by_key(keys._vector.begin(), keys._vector.begin() +
+                <size_t>keys.size,
+                make_zip_iterator(
+                    make_tuple2(values._vector.begin(),
+                                delay_type._vector.begin())))
