@@ -1,5 +1,5 @@
-#ifndef ___TIMING__H___
-#define ___TIMING__H___
+#ifndef ___CAMIP_TIMING__H___
+#define ___CAMIP_TIMING__H___
 
 
 template <typename DelayIterator>
@@ -14,8 +14,8 @@ struct delay {
 
   template <typename T1, typename T2, typename T3>
   result_type operator() (T1 delay_type, T2 delta_x, T3 delta_y) {
-    size_t stride;
-    size_t offset;
+    size_t stride = 0;
+    size_t offset = 0;
 
     if (delay_type == 0) {
       /* Delay is logic-to-logic. */
@@ -38,4 +38,16 @@ struct delay {
   }
 };
 
-#endif  // #ifndef ___TIMING__H___
+
+struct arrival_delay {
+  typedef float result_type;
+
+  template <typename T1, typename T2, typename T3>
+  result_type operator() (T1 j_is_sync, T2 delay_ij, T3 t_a_j) {
+    if (j_is_sync) { return delay_ij; }
+    else if (t_a_j > 0) { return t_a_j + delay_ij; }
+    else { return 0; }
+  }
+};
+
+#endif  // #ifndef ___CAMIP_TIMING__H___

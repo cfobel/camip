@@ -14,14 +14,15 @@ from cythrust.thrust.fill cimport fill_n
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
                                          not_equal_to, unpack_quinary_args,
                                          plus, minus, reduce_plus4, identity,
-                                         logical_not, absolute,
-                                         unpack_ternary_args)
+                                         logical_not, absolute, duplicate,
+                                         unpack_ternary_args, minmax_tuple)
 from cythrust.thrust.iterator.counting_iterator cimport counting_iterator
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
 from cythrust.thrust.iterator.repeated_range_iterator cimport repeated_range
 from cythrust.thrust.iterator.transform_iterator cimport make_transform_iterator
 from cythrust.thrust.iterator.zip_iterator cimport make_zip_iterator
-from cythrust.thrust.reduce cimport accumulate, accumulate_by_key, reduce_by_key
+from cythrust.thrust.reduce cimport (reduce as _reduce, accumulate,
+                                     accumulate_by_key, reduce_by_key)
 from cythrust.thrust.scan cimport exclusive_scan, inclusive_scan
 from cythrust.thrust.sequence cimport sequence
 from cythrust.thrust.sort cimport sort_by_key, sort
@@ -30,7 +31,7 @@ from cythrust.thrust.tuple cimport (make_tuple2, make_tuple3, make_tuple4,
                                     make_tuple5)
 from camip.CAMIP cimport (VPRAutoSlotKeyTo2dPosition, evaluate_move,
                           VPRMovePattern, c_star_plus_2d, block_group_key,
-                          assess_group, delay)
+                          assess_group, delay, arrival_delay)
 
 
 cpdef evaluate_moves(DeviceVectorInt32 row, DeviceVectorInt32 col,
@@ -384,6 +385,8 @@ cpdef look_up_delay(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
                     DeviceVectorFloat32 delays,
                     int32_t nrows, int32_t ncols,
                     DeviceVectorInt8 delay_type,
+                    DeviceVectorInt32 delta_x,
+                    DeviceVectorInt32 delta_y,
                     DeviceVectorFloat32 delays_ij):
     cdef size_t count = i_index.size
     cdef absolute[int32_t] abs_func
@@ -399,6 +402,34 @@ cpdef look_up_delay(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
         (deref(delay_f))
 
     copy_n(
+        make_zip_iterator(
+            make_tuple2(
+                make_transform_iterator(
+                    make_transform_iterator(
+                        make_zip_iterator(
+                            make_tuple2(
+                                make_permutation_iterator(
+                                    p_x._vector.begin(),
+                                    i_index._vector.begin()),
+                                make_permutation_iterator(
+                                    p_x._vector.begin(),
+                                    j_index._vector.begin()))),
+                        deref(unpacked_minus)), abs_func),
+                make_transform_iterator(
+                    make_transform_iterator(
+                        make_zip_iterator(
+                            make_tuple2(
+                                make_permutation_iterator(
+                                    p_y._vector.begin(),
+                                    i_index._vector.begin()),
+                                make_permutation_iterator(
+                                    p_y._vector.begin(),
+                                    j_index._vector.begin()))),
+                        deref(unpacked_minus)), abs_func))),
+        count, make_zip_iterator(make_tuple2(delta_x._vector.begin(),
+                                             delta_y._vector.begin())))
+
+    copy_n(
         make_transform_iterator(
             make_zip_iterator(
                 make_tuple3(
@@ -411,16 +442,16 @@ cpdef look_up_delay(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
                                         p_x._vector.begin(),
                                         i_index._vector.begin()),
                                     make_permutation_iterator(
-                                        p_y._vector.begin(),
-                                        i_index._vector.begin()))),
+                                        p_x._vector.begin(),
+                                        j_index._vector.begin()))),
                             deref(unpacked_minus)), abs_func),
                     make_transform_iterator(
                         make_transform_iterator(
                             make_zip_iterator(
                                 make_tuple2(
                                     make_permutation_iterator(
-                                        p_x._vector.begin(),
-                                        j_index._vector.begin()),
+                                        p_y._vector.begin(),
+                                        i_index._vector.begin()),
                                     make_permutation_iterator(
                                         p_y._vector.begin(),
                                         j_index._vector.begin()))),
@@ -429,3 +460,38 @@ cpdef look_up_delay(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
     del unpacked_minus
     del delay_f
     del unpacked_delay
+
+
+cpdef arrival_delays(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
+                     DeviceVectorInt8 block_is_sync, DeviceVectorFloat32
+                     arrival_times, DeviceVectorFloat32 delays_ij,
+                     DeviceVectorInt32 reduced_keys,
+                     DeviceVectorFloat32 min_arrival_delays,
+                     DeviceVectorFloat32 max_arrival_delays):
+    cdef duplicate[float] duplicate_f
+    cdef minmax_tuple[float] minmax_f
+    cdef arrival_delay arrival_delay_f
+    cdef unpack_ternary_args[arrival_delay] *unpacked_arrival_delay = \
+        new unpack_ternary_args[arrival_delay](arrival_delay_f)
+    cdef equal_to[int32_t] reduce_compare  # Functor to compare reduction keys.
+
+    # result_type operator() (T1 j_is_sync, T2 delay_ij, T3 t_a_j) {
+    cdef int32_t count = (<device_vector[int32_t].iterator>(reduce_by_key(
+        i_index._vector.begin(), i_index._vector.end(),
+        make_transform_iterator(
+            make_transform_iterator(
+                make_zip_iterator(
+                    make_tuple3(
+                        make_permutation_iterator(block_is_sync._vector.begin(),
+                                                  j_index._vector.begin()),
+                        delays_ij._vector.begin(),
+                        make_permutation_iterator(arrival_times._vector.begin(),
+                                                  j_index._vector.begin()))),
+                deref(unpacked_arrival_delay)), duplicate_f),
+        reduced_keys._vector.begin(),
+        make_zip_iterator(
+            make_tuple2(min_arrival_delays._vector.begin(),
+                        max_arrival_delays._vector.begin())),
+        reduce_compare, minmax_f).first) - reduced_keys._vector.begin())
+    del unpacked_arrival_delay
+    return count

@@ -130,6 +130,7 @@ class VPRSchedule(object):
     def run(self, placer):
         states = []
         total_move_count = 0
+        #import pudb; pudb.set_trace()
         while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
                placer.net_count):
             start = time.time()

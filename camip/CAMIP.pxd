@@ -90,9 +90,12 @@ cdef extern from "CAMIP.hpp" nogil:
         c_star_plus_2d(float)
 
 
-cdef extern from "timing.h" nogil:
+cdef extern from "camip_timing.h" nogil:
     cdef cppclass delay[T]:
         delay(T, int32_t, int32_t)
+
+    cdef cppclass arrival_delay:
+        pass
 
 
 cdef extern from "schedule.hpp" nogil:
