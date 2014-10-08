@@ -66,6 +66,9 @@ from device.CAMIP import (evaluate_moves as d_evaluate_moves,
                           assess_groups as d_assess_groups,
                           sum_float_by_key as d_sum_float_by_key,
                           copy_int32 as d_copy_int32,
+                          permuted_fill_float32 as d_permuted_fill_float32,
+                          permuted_fill_int32 as d_permuted_fill_int32,
+                          look_up_delay as d_look_up_delay,
                           )
 
 
@@ -174,6 +177,7 @@ class DeviceSparseMatrix(object):
 
 class CAMIP(object):
     def __init__(self, connections_table, io_capacity=3):
+        self._connections_table = connections_table
         self.io_capacity = io_capacity
 
         self.io_count = connections_table.io_count

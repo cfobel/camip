@@ -1,20 +1,20 @@
 #distutils: language=c++
 #cython: embedsignature=True, boundscheck=False
 from cython.operator cimport dereference as deref
-from libc.stdint cimport uint32_t, int32_t, uint8_t
+from libc.stdint cimport uint32_t, int32_t, uint8_t, int8_t
 from libc.math cimport fmin
 import numpy as np
 cimport numpy as np
 
 from cythrust.device_vector cimport (DeviceVectorInt32, DeviceVectorUint32,
-                                     DeviceVectorFloat32)
+                                     DeviceVectorFloat32, DeviceVectorInt8)
 from cythrust.thrust.copy cimport copy_n, copy_if_w_stencil, copy
 from cythrust.thrust.device_vector cimport device_vector
 from cythrust.thrust.fill cimport fill_n
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
                                          not_equal_to, unpack_quinary_args,
                                          plus, minus, reduce_plus4, identity,
-                                         logical_not)
+                                         logical_not, absolute)
 from cythrust.thrust.iterator.counting_iterator cimport counting_iterator
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
 from cythrust.thrust.iterator.repeated_range_iterator cimport repeated_range
@@ -70,6 +70,9 @@ cpdef evaluate_moves(DeviceVectorInt32 row, DeviceVectorInt32 col,
                                 make_permutation_iterator(r_inv._vector.begin(), col._vector.begin()))),
                         deref(eval_func_tuple)))), deref(plus2_tuple)),
         reduced_keys._vector.begin(), reduced_values._vector.begin())
+    del plus2_tuple
+    del eval_func
+    del eval_func_tuple
 
 
 def minus_float(DeviceVectorFloat32 n_c, DeviceVectorFloat32 n_c_prime,
@@ -183,6 +186,8 @@ cpdef star_plus_2d(DeviceVectorFloat32 e_x, DeviceVectorFloat32 e_x2,
                             e_y._vector.begin(), e_y2._vector.begin(),
                             r_inv._vector.begin())),
             deref(_star_plus_2d)), count, e_c._vector.begin())
+    del _star_plus
+    del _star_plus_2d
     return <float>accumulate(e_c._vector.begin(), e_c._vector.begin() + count)
 
 
@@ -211,6 +216,7 @@ def compute_block_group_keys(DeviceVectorUint32 block_slot_keys,
     transform2(block_slot_keys._vector.begin(), block_slot_keys._vector.begin()
                + count, block_slot_keys_prime._vector.begin(),
                block_group_keys._vector.begin(), deref(group_key_func))
+    del group_key_func
 
 
 cpdef equal_count_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b):
@@ -227,7 +233,7 @@ cpdef equal_count_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b):
     cdef identity[uint32_t] to_uint32
     cdef size_t count = a.size
 
-    return <uint32_t>accumulate(
+    count = <size_t>accumulate(
         make_transform_iterator(
             make_transform_iterator(
                 make_zip_iterator(make_tuple2(a._vector.begin(),
@@ -238,6 +244,8 @@ cpdef equal_count_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b):
                 make_zip_iterator(make_tuple2(a._vector.begin() + count,
                                               b._vector.begin() + count)),
                 deref(unpacked_equal_to)), to_uint32))
+    del unpacked_equal_to
+    return count
 
 
 cpdef sequence_int32(DeviceVectorInt32 a):
@@ -282,6 +290,7 @@ cpdef permuted_nonmatch_inclusive_scan_int32(DeviceVectorInt32 elements,
                                                   count))),
                 deref(unpacked_not_equal_to)), to_int32),
         output._vector.begin() + 1)
+    del unpacked_not_equal_to
 
 
 def assess_groups(float temperature, DeviceVectorInt32 group_block_keys,
@@ -316,7 +325,7 @@ def assess_groups(float temperature, DeviceVectorInt32 group_block_keys,
 
     # a = ((group_delta_costs <= 0) | (rand() < np.exp(-group_delta_costs / temperature)))
     # rejected_block_keys = group_block_keys[~a[packed_block_group_keys]]
-    return <size_t>(copy_if_w_stencil(
+    count = <size_t>(copy_if_w_stencil(
         group_block_keys._vector.begin(), group_block_keys._vector.begin() +
         count,
         make_permutation_iterator(
@@ -327,6 +336,9 @@ def assess_groups(float temperature, DeviceVectorInt32 group_block_keys,
                 deref(unpack_assess_group)),
             packed_block_group_keys._vector.begin()), output._vector.begin(),
         _logical_not) - output._vector.begin())
+    del _assess_group
+    del unpack_assess_group
+    return count
 
 
 cpdef sum_float_by_key(DeviceVectorInt32 keys, DeviceVectorFloat32 values,
@@ -336,3 +348,77 @@ cpdef sum_float_by_key(DeviceVectorInt32 keys, DeviceVectorFloat32 values,
         values._vector.begin(), reduced_keys._vector.begin(),
         reduced_values._vector.begin()).first - reduced_keys._vector.begin())
     return count
+
+
+cpdef permuted_fill_float32(DeviceVectorFloat32 elements,
+                          DeviceVectorInt32 index, float value):
+    cdef size_t count = index.size
+
+    fill_n(make_permutation_iterator(elements._vector.begin(),
+                                     index._vector.begin()),
+           count, value)
+
+
+cpdef permuted_fill_int32(DeviceVectorInt32 elements,
+                          DeviceVectorInt32 index, int32_t value):
+    cdef size_t count = index.size
+
+    fill_n(make_permutation_iterator(elements._vector.begin(),
+                                     index._vector.begin()),
+           count, value)
+
+
+cpdef permuted_fill_int8(DeviceVectorInt8 elements, DeviceVectorInt32 index,
+                         int8_t value):
+    cdef size_t count = index.size
+
+    fill_n(make_permutation_iterator(elements._vector.begin(),
+                                     index._vector.begin()),
+           count, value)
+
+
+cpdef look_up_delay(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
+                    DeviceVectorInt32 p_x, DeviceVectorInt32 p_y,
+                    DeviceVectorInt8 delay_type,
+                    DeviceVectorInt32 delta_x,
+                    DeviceVectorInt32 delta_y):
+
+                    #DeviceVectorFloat32 io_to_fb,  # `delay_type = 1`
+                    #DeviceVectorFloat32 fb_to_fb,  # `delay_type = 0`
+                    #DeviceVectorFloat32 fb_to_io,  # `delay_type = 20`
+                    #DeviceVectorFloat32 io_to_io  # `delay_type = 21`
+                    #DeviceVectorFloat32 delay_ij):
+    cdef size_t count = i_index.size
+    cdef absolute[int32_t] abs_func
+    cdef minus[int32_t] minus_func
+    cdef unpack_binary_args[minus[int32_t]] *unpacked_minus = \
+        new unpack_binary_args[minus[int32_t]](minus_func)
+
+    copy_n(
+        make_zip_iterator(
+            make_tuple2(
+                make_transform_iterator(
+                    make_transform_iterator(
+                        make_zip_iterator(
+                            make_tuple2(
+                                make_permutation_iterator(
+                                    p_x._vector.begin(),
+                                    i_index._vector.begin()),
+                                make_permutation_iterator(
+                                    p_y._vector.begin(),
+                                    i_index._vector.begin()))),
+                        deref(unpacked_minus)), abs_func),
+                make_transform_iterator(
+                    make_transform_iterator(
+                        make_zip_iterator(
+                            make_tuple2(
+                                make_permutation_iterator(
+                                    p_x._vector.begin(),
+                                    j_index._vector.begin()),
+                                make_permutation_iterator(
+                                    p_y._vector.begin(),
+                                    j_index._vector.begin()))),
+                        deref(unpacked_minus)), abs_func))), count,
+        make_zip_iterator(
+            make_tuple2(delta_x._vector.begin(), delta_y._vector.begin())))
+    del unpacked_minus
