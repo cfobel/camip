@@ -6,6 +6,7 @@ from table_layouts import (get_PLACEMENT_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_DATAFRAME_LAYOUT)
 from camip import CAMIP, VPRSchedule
+from camip.timing import CAMIPTiming
 from camip.device.CAMIP import extract_positions
 import numpy as np
 import tables as ts
@@ -15,7 +16,8 @@ from cyplace_experiments.data.connections_table import ConnectionsTable
 
 
 def place(net_file_namebase, seed, inner_num=1.):
-    placer = CAMIP(ConnectionsTable(net_file_namebase))
+    #placer = CAMIP(ConnectionsTable(net_file_namebase))
+    placer = CAMIPTiming(net_file_namebase)
     placer.shuffle_placement()
     print placer.evaluate_placement()
     schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer)

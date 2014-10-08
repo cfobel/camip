@@ -14,7 +14,8 @@ from cythrust.thrust.fill cimport fill_n
 from cythrust.thrust.functional cimport (unpack_binary_args, square, equal_to,
                                          not_equal_to, unpack_quinary_args,
                                          plus, minus, reduce_plus4, identity,
-                                         logical_not, absolute)
+                                         logical_not, absolute,
+                                         unpack_ternary_args)
 from cythrust.thrust.iterator.counting_iterator cimport counting_iterator
 from cythrust.thrust.iterator.permutation_iterator cimport make_permutation_iterator
 from cythrust.thrust.iterator.repeated_range_iterator cimport repeated_range
@@ -25,10 +26,11 @@ from cythrust.thrust.scan cimport exclusive_scan, inclusive_scan
 from cythrust.thrust.sequence cimport sequence
 from cythrust.thrust.sort cimport sort_by_key, sort
 from cythrust.thrust.transform cimport transform, transform2
-from cythrust.thrust.tuple cimport make_tuple5, make_tuple4, make_tuple2
+from cythrust.thrust.tuple cimport (make_tuple2, make_tuple3, make_tuple4,
+                                    make_tuple5)
 from camip.CAMIP cimport (VPRAutoSlotKeyTo2dPosition, evaluate_move,
                           VPRMovePattern, c_star_plus_2d, block_group_key,
-                          assess_group)
+                          assess_group, delay)
 
 
 cpdef evaluate_moves(DeviceVectorInt32 row, DeviceVectorInt32 col,
@@ -379,46 +381,51 @@ cpdef permuted_fill_int8(DeviceVectorInt8 elements, DeviceVectorInt32 index,
 
 cpdef look_up_delay(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
                     DeviceVectorInt32 p_x, DeviceVectorInt32 p_y,
+                    DeviceVectorFloat32 delays,
+                    int32_t nrows, int32_t ncols,
                     DeviceVectorInt8 delay_type,
-                    DeviceVectorInt32 delta_x,
-                    DeviceVectorInt32 delta_y):
-
-                    #DeviceVectorFloat32 io_to_fb,  # `delay_type = 1`
-                    #DeviceVectorFloat32 fb_to_fb,  # `delay_type = 0`
-                    #DeviceVectorFloat32 fb_to_io,  # `delay_type = 20`
-                    #DeviceVectorFloat32 io_to_io  # `delay_type = 21`
-                    #DeviceVectorFloat32 delay_ij):
+                    DeviceVectorFloat32 delays_ij):
     cdef size_t count = i_index.size
     cdef absolute[int32_t] abs_func
     cdef minus[int32_t] minus_func
     cdef unpack_binary_args[minus[int32_t]] *unpacked_minus = \
         new unpack_binary_args[minus[int32_t]](minus_func)
+    cdef delay[device_vector[float].iterator] *delay_f = \
+        new delay[device_vector[float].iterator](delays._vector.begin(),
+                                                 nrows, ncols)
+    cdef unpack_ternary_args[delay[device_vector[float].iterator]] \
+        *unpacked_delay = new \
+        unpack_ternary_args[delay[device_vector[float].iterator]]\
+        (deref(delay_f))
 
     copy_n(
-        make_zip_iterator(
-            make_tuple2(
-                make_transform_iterator(
+        make_transform_iterator(
+            make_zip_iterator(
+                make_tuple3(
+                    delay_type._vector.begin(),
                     make_transform_iterator(
-                        make_zip_iterator(
-                            make_tuple2(
-                                make_permutation_iterator(
-                                    p_x._vector.begin(),
-                                    i_index._vector.begin()),
-                                make_permutation_iterator(
-                                    p_y._vector.begin(),
-                                    i_index._vector.begin()))),
-                        deref(unpacked_minus)), abs_func),
-                make_transform_iterator(
+                        make_transform_iterator(
+                            make_zip_iterator(
+                                make_tuple2(
+                                    make_permutation_iterator(
+                                        p_x._vector.begin(),
+                                        i_index._vector.begin()),
+                                    make_permutation_iterator(
+                                        p_y._vector.begin(),
+                                        i_index._vector.begin()))),
+                            deref(unpacked_minus)), abs_func),
                     make_transform_iterator(
-                        make_zip_iterator(
-                            make_tuple2(
-                                make_permutation_iterator(
-                                    p_x._vector.begin(),
-                                    j_index._vector.begin()),
-                                make_permutation_iterator(
-                                    p_y._vector.begin(),
-                                    j_index._vector.begin()))),
-                        deref(unpacked_minus)), abs_func))), count,
-        make_zip_iterator(
-            make_tuple2(delta_x._vector.begin(), delta_y._vector.begin())))
+                        make_transform_iterator(
+                            make_zip_iterator(
+                                make_tuple2(
+                                    make_permutation_iterator(
+                                        p_x._vector.begin(),
+                                        j_index._vector.begin()),
+                                    make_permutation_iterator(
+                                        p_y._vector.begin(),
+                                        j_index._vector.begin()))),
+                            deref(unpacked_minus)), abs_func))),
+            deref(unpacked_delay)), count, delays_ij._vector.begin())
     del unpacked_minus
+    del delay_f
+    del unpacked_delay
