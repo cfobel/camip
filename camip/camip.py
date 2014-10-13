@@ -36,8 +36,7 @@ from collections import OrderedDict
 
 from cythrust.si_prefix import si_format
 from cyplace_experiments.data import open_netlists_h5f
-from cyplace_experiments.data.connections_table import (get_connections_table,
-                                                        INPUT_BLOCK,
+from cyplace_experiments.data.connections_table import (INPUT_BLOCK,
                                                         OUTPUT_BLOCK,
                                                         LOGIC_BLOCK)
 from .CAMIP import (VPRAutoSlotKeyTo2dPosition, random_vpr_pattern,
@@ -217,7 +216,7 @@ class CAMIP(object):
         self.p_y_prime = DeviceVectorInt32(self.block_count)
 
         self.X = DeviceSparseMatrix(
-            connections_table.connections.block_key,
+            connections_table.connections.sink_key,
             connections_table.connections.net_key)
 
         self._e_x = DeviceVectorFloat32(self.X.col.size)
@@ -227,10 +226,10 @@ class CAMIP(object):
         self._e_c = DeviceVectorFloat32(self.X.col.size)
 
         self.omega = DeviceSparseMatrix(
-            connections_table.connections.block_key,
+            connections_table.connections.sink_key,
             connections_table.connections.net_key)
         self.omega_prime = DeviceSparseMatrix(
-            connections_table.connections.block_key,
+            connections_table.connections.sink_key,
             connections_table.connections.net_key,
             np.ones(len(connections_table), dtype=np.float32))
         self._block_keys = DeviceVectorInt32(len(connections_table))

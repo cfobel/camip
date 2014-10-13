@@ -19,7 +19,7 @@ def place(net_file_namebase, seed, inner_num=1., timing=False,
     if timing:
         placer = CAMIPTiming(net_file_namebase)
     else:
-        placer = CAMIP(ConnectionsTable(net_file_namebase))
+        placer = CAMIP(ConnectionsTable.from_net_list_name(net_file_namebase))
     placer.shuffle_placement()
     print placer.evaluate_placement()
     schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer,
