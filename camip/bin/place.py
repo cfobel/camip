@@ -5,26 +5,34 @@ from path_helpers import path
 from table_layouts import (get_PLACEMENT_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_DATAFRAME_LAYOUT)
-from camip import MatrixNetlist, CAMIP, VPRSchedule
+from camip import CAMIP, VPRSchedule
+from camip.timing import CAMIPTiming
 from camip.device.CAMIP import extract_positions
 import numpy as np
 import tables as ts
 import pandas as pd
-from cyplace_experiments.data import open_netlists_h5f
+from cyplace_experiments.data.connections_table import ConnectionsTable
 
 
-def place(net_file_namebase, seed, inner_num=1.):
-    netlists_h5f = open_netlists_h5f()
-    netlist_group = getattr(netlists_h5f.root.netlists, net_file_namebase)
-    connections = pd.DataFrame(netlist_group.connections[:])
-    block_type_labels = netlist_group.block_type_counts.cols.label[:]
-    netlist = MatrixNetlist(connections,
-                            block_type_labels[netlist_group.block_types[:]])
-    placer = CAMIP(netlist)
+def place(net_file_namebase, seed, inner_num=1., timing=False,
+          draw_enabled=False, critical_path_only=False,
+          wire_length_factor=0.5):
+    connections_table = ConnectionsTable.from_net_list_name(net_file_namebase)
+    if timing or critical_path_only:
+        if timing:
+            critical_path_only = False
+        placer = CAMIPTiming(connections_table,
+                             timing_cost_disabled=critical_path_only,
+                             wire_length_factor=wire_length_factor)
+    else:
+        placer = CAMIP(connections_table)
     placer.shuffle_placement()
     print placer.evaluate_placement()
-    schedule = VPRSchedule(placer.s2p, inner_num, placer.netlist, placer)
+    schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer,
+                           draw_enabled=draw_enabled)
     print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature
+
+    #import pudb; pudb.set_trace()
     states = schedule.run(placer)
 
     # Convert list of state dictionaries into a `pandas.DataFrame`.
@@ -75,6 +83,7 @@ def save_placement(net_file_namebase, block_positions, place_stats,
                                        'driven' % (net_file_namebase,
                                                    inner_num))
 
+    TABLE_LAYOUT = get_PLACEMENT_TABLE_LAYOUT(len(block_positions)),
     placements = h5f.createTable(
         net_file_results, 'placements',
         get_PLACEMENT_TABLE_LAYOUT(len(block_positions)),
@@ -137,7 +146,15 @@ def parse_args(argv=None):
     mutex_group = parser.add_mutually_exclusive_group()
     mutex_group.add_argument('-o', '--output_path', default=None, type=path)
     mutex_group.add_argument('-d', '--output_dir', default=None, type=path)
+    parser.add_argument('-e', '--draw-enabled', action='store_true')
     parser.add_argument('-i', '--inner-num', type=float, default=1.)
+    parser.add_argument('-c', '--critical-path', action='store_true',
+                        help='Enable critical path calculation.')
+    parser.add_argument('-t', '--timing', action='store_true',
+                        help='Optimize using path-based delays.')
+    parser.add_argument('-w', '--wire-length-factor', type=float, default=0.5,
+                        help='When timing is enabled, fraction of emphasis to '
+                        'place on wire-length _(vs. timing)_.')
     parser.add_argument('-s', '--seed', default=np.random.randint(100000),
                         type=int)
     parser.add_argument(dest='net_file_namebase')
@@ -152,7 +169,8 @@ if __name__ == '__main__':
 
     np.random.seed(args.seed)
     placer, place_stats = place(args.net_file_namebase, args.seed,
-                                args.inner_num)
+                                args.inner_num, args.timing, args.draw_enabled,
+                                args.critical_path, args.wire_length_factor)
 
     extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
                       placer.s2p)
@@ -164,3 +182,5 @@ if __name__ == '__main__':
     save_placement(args.net_file_namebase, block_positions, place_stats,
                    output_path=args.output_path, output_dir=args.output_dir,
                    inner_num=args.inner_num, seed=args.seed)
+    if args.draw_enabled:
+        raw_input()
