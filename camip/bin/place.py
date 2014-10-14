@@ -16,15 +16,17 @@ from cyplace_experiments.data.connections_table import ConnectionsTable
 
 def place(net_file_namebase, seed, inner_num=1., timing=False,
           draw_enabled=False):
+    connections_table = ConnectionsTable.from_net_list_name(net_file_namebase)
     if timing:
-        placer = CAMIPTiming(net_file_namebase)
+        placer = CAMIPTiming(connections_table)
     else:
-        placer = CAMIP(ConnectionsTable.from_net_list_name(net_file_namebase))
+        placer = CAMIP(connections_table)
     placer.shuffle_placement()
     print placer.evaluate_placement()
     schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer,
                            draw_enabled=draw_enabled)
     print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature
+
     states = schedule.run(placer)
 
     # Convert list of state dictionaries into a `pandas.DataFrame`.
