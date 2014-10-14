@@ -139,6 +139,7 @@ class VPRSchedule(object):
             total_moves, rejected_moves = self.outer_iteration(placer)
             end = time.time()
             total_move_count += total_moves
+            extra_state = placer.get_state()
             state = OrderedDict([('start', start), ('end', end),
                                  ('cost', placer.theta),
                                  ('temperature',
@@ -147,6 +148,7 @@ class VPRSchedule(object):
                                   self.anneal_schedule.success_ratio),
                                  ('radius_limit', self.anneal_schedule.rlim),
                                  ('total_iteration_count', total_move_count)])
+            state.update(extra_state)
             if not states:
                 print '\n| ' + ' | '.join(state.keys()[2:]) + ' |'
                 print '|' + '|'.join(['-' * (len(k) + 2)
@@ -527,3 +529,6 @@ class CAMIP(object):
         pack_io(io_slot_block_keys, self.io_capacity)
         self.slot_block_keys[:self.s2p.io_slot_count] = \
             io_slot_block_keys[:]
+
+    def get_state(self):
+        return {}
