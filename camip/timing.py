@@ -159,15 +159,16 @@ class CAMIPTiming(CAMIP):
         #    reducing by the target block key.  The resulting reduced delta
         #    values can then be scattered to the appropriate cost array, _i.e.,
         #    either the arrival cost array or departure cost array_.
-        arrival_block_count, departure_block_count = block_delta_timing_cost(
-            a.v['target_key'], a.v['cost'], a.v['cost_prime'],
-            d.v['target_key'], d.v['cost'], d.v['cost_prime'],
-            a.v['reduced_keys'], d.v['reduced_keys'],
-            a.v['reduced_target_cost'], d.v['reduced_target_cost'],
-            block_arrays.v['arrival_cost'], block_arrays.v['departure_cost'])
+        arrival_block_count, departure_block_count, max_timing_delta = \
+            block_delta_timing_cost(
+                a.v['target_key'], a.v['cost'], a.v['cost_prime'],
+                d.v['target_key'], d.v['cost'], d.v['cost_prime'],
+                a.v['reduced_keys'], d.v['reduced_keys'],
+                a.v['reduced_target_cost'], d.v['reduced_target_cost'],
+                block_arrays.v['arrival_cost'],
+                block_arrays.v['departure_cost'])
 
         max_wirelength_delta = np.abs(self.delta_n[:]).max()
-        max_timing_delta = np.abs(block_arrays['arrival_cost']).max()
         alpha = self.wire_length_factor
         self.delta_n[:] = ((alpha * self.delta_n[:] / max_wirelength_delta) +
                            ((1 - alpha) * block_arrays['arrival_cost'] /
