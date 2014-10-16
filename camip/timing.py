@@ -27,7 +27,8 @@ from cyplace_experiments.data.connections_table import (CONNECTION_DRIVER,
 import cythrust.device_vector as dv
 from thrust_timing.SORT_TIMING import (look_up_delay_prime,
                                        block_delta_timing_cost,
-                                       connection_criticality, connection_cost)
+                                       connection_criticality, connection_cost,
+                                       compute_normalized_weighted_sum)
 from cythrust import DeviceDataFrame
 
 
@@ -169,12 +170,11 @@ class CAMIPTiming(CAMIP):
                 block_arrays.v['departure_cost'])
 
         max_wirelength_delta = np.abs(self.delta_n[:]).max()
-        alpha = self.wire_length_factor
-        self.delta_n[:] = ((alpha * self.delta_n[:] / max_wirelength_delta) +
-                           ((1 - alpha) * block_arrays['arrival_cost'] /
-                            max_timing_delta))
-        # No-op for breakpoint
-        x = None
+        delta_n_view = dv.view_from_vector(self.delta_n)
+        compute_normalized_weighted_sum(self.wire_length_factor, delta_n_view,
+                                        max_wirelength_delta,
+                                        block_arrays.v['arrival_cost'],
+                                        max_timing_delta, delta_n_view)
 
     def get_state(self):
         return {'critical_path': self.critical_path}
