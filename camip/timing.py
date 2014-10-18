@@ -13,14 +13,6 @@ from cyplace_experiments.data.connections_table import (CONNECTION_DRIVER,
 from cyplace_experiments.data import open_netlists_h5f
 from .camip import (CAMIP, DeviceSparseMatrix)
 from cyplace_experiments.data.connections_table import ConnectionsTable
-from .device.CAMIP import (look_up_delay as d_look_up_delay,
-                           sort_delay_matrix as d_sort_delay_matrix,
-                           arrival_delays as d_arrival_delays,
-                           sort_delay_matrix_by_levels as
-                           d_sort_delay_matrix_by_levels,
-                           inclusive_scan_int32 as d_inclusive_scan_int32,
-                           count_int8_key as d_count_int8_key,
-                           )
 from thrust_timing.path_timing import PathTimingData, get_arch_data
 from cyplace_experiments.data.connections_table import (CONNECTION_DRIVER,
                                                         CONNECTION_SINK)
