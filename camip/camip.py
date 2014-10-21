@@ -126,8 +126,10 @@ class VPRSchedule(object):
                 placer.draw()
             total_moves += non_zero_moves
             rejected_moves += rejected
+
         success_ratio = (total_moves - rejected_moves) / float(total_moves)
         self.anneal_schedule.update_state(success_ratio)
+        placer.update_state(max_logic_move)
         return total_moves, rejected_moves
 
     def run(self, placer):
@@ -257,6 +259,9 @@ class CAMIP(object):
                                                           .size)
         self._rejected_block_keys = DeviceVectorInt32(self.block_group_keys
                                                       .size)
+
+    def update_state(self, maximum_move_distance):
+        pass
 
     def shuffle_placement(self):
         '''

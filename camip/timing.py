@@ -43,7 +43,6 @@ class CAMIPTiming(CAMIP):
         self.departure_data = PathTimingData(get_arch_data(*self.s2p.extent),
                                              connections_table,
                                              source=CONNECTION_SINK)
-        self.criticality_exp = 1
         self.arrival_data.connections.add('cost', dtype=np.float32)
         self.arrival_data.connections.add('cost_prime', dtype=np.float32)
         self.arrival_data.connections.add('reduced_target_cost',
@@ -60,6 +59,27 @@ class CAMIPTiming(CAMIP):
                                dv.view_from_vector(self.p_x_prime),
                                'p_y_prime':
                                dv.view_from_vector(self.p_y_prime)}
+
+        self.final_criticality_exp = 8.
+        self.criticality_exp = 1.
+        self.first_max_move_distance = max(*self.s2p.extent)
+        self.delta_r = self.first_max_move_distance - 1.
+        self.delta_e = self.final_criticality_exp - self.criticality_exp
+        self.delta_e_over_delta_r = self.delta_e / self.delta_r
+        self.criticality_const_term = (self.criticality_exp +
+                                       (self.first_max_move_distance *
+                                        self.delta_e_over_delta_r))
+        self._arrival_times = None
+        self._departure_times = None
+
+    def update_state(self, maximum_move_distance):
+        super(CAMIPTiming, self).update_state(maximum_move_distance)
+        self.criticality_exp = (self.criticality_const_term -
+                                maximum_move_distance *
+                                self.delta_e_over_delta_r)
+        self._arrival_times = self.arrival_times()
+        self._departure_times = self.departure_times()
+        self.critical_path = self._arrival_times.max()
 
     def arrival_times(self):
         result = self.arrival_data.update_position_based_longest_paths(
@@ -81,11 +101,15 @@ class CAMIPTiming(CAMIP):
     def evaluate_moves(self):
         super(CAMIPTiming, self).evaluate_moves()
 
-        self._arrival_times = self.arrival_times()
-        self._departure_times = self.departure_times()
+        # If this is the first run iteration, we need to compute the arrival
+        # times and departure times.  After the first run iteration, the times
+        # will be updated whenever the `update_state` method is called.
+        if self._departure_times is None:
+            self.update_state(self.first_max_move_distance)
 
+        # If timing-costs are disabled, we do not evaluate costs based on delay
+        # information, so we skip and connection delay cost calculations.
         if self.timing_cost_disabled:
-            self.critical_path = self._arrival_times.max()
             return
 
         arch_data = self.departure_data.arch_data
