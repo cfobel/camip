@@ -123,6 +123,8 @@ class CAMIPTiming(CAMIP):
         block_arrays.v['arrival_cost'][:] = 0
         block_arrays.v['departure_cost'][:] = 0
 
+        # TODO: Targets that have a synchronous logic block as a source must
+        # treat the longest path delay of the source as 0!
         self.critical_path = connection_cost(self.criticality_exp,
                                              a.v['delay'],
                                              block_arrays.v['arrival'],
