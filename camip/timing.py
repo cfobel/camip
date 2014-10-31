@@ -71,6 +71,7 @@ class CAMIPTiming(CAMIP):
                                         self.delta_e_over_delta_r))
         self._arrival_times = None
         self._departure_times = None
+        self.sync_block_keys = self._connections_table.sync_logic_block_keys()
 
     def update_state(self, maximum_move_distance):
         super(CAMIPTiming, self).update_state(maximum_move_distance)
@@ -80,6 +81,11 @@ class CAMIPTiming(CAMIP):
         self._arrival_times = self.arrival_times()
         self._departure_times = self.departure_times()
         self.critical_path = self._arrival_times.max()
+
+        # Delay targets that have a synchronous logic block as a source _must_
+        # treat the longest path delay of the source as 0!
+        self._arrival_times[self.sync_block_keys] = 0
+        self._departure_times[self.sync_block_keys] = 0
 
     def arrival_times(self):
         result = self.arrival_data.update_position_based_longest_paths(
@@ -138,15 +144,13 @@ class CAMIPTiming(CAMIP):
         block_arrays.add('departure_cost', dtype=np.float32)
         block_arrays.v['arrival_cost'][:] = 0
         block_arrays.v['departure_cost'][:] = 0
+        block_arrays.v['departure_cost'][:] = 0
+        block_arrays.v['arrival']
 
-        # TODO: Targets that have a synchronous logic block as a source must
-        # treat the longest path delay of the source as 0!
-        self.critical_path = connection_cost(self.criticality_exp,
-                                             a.v['delay'],
-                                             block_arrays.v['arrival'],
-                                             block_arrays.v['departure'],
-                                             a.v['source_key'],
-                                             a.v['target_key'], a.v['cost'])
+        connection_cost(self.criticality_exp, a.v['delay'],
+                        block_arrays.v['arrival'], block_arrays.v['departure'],
+                        a.v['source_key'], a.v['target_key'], a.v['cost'],
+                        self.critical_path)
         connection_cost(self.criticality_exp, a.v['delay_prime'],
                         block_arrays.v['arrival'], block_arrays.v['departure'],
                         a.v['source_key'], a.v['target_key'],

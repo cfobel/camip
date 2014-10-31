@@ -41,7 +41,7 @@ public:
             return 1;
         } else if(success_ratio_ > 0.8) {
             return 2;
-        } else if(success_ratio_ > 0.8 or rlim_ > 1) {
+        } else if(rlim_ > 1) {
             return 3;
         } else {
             return 4;
