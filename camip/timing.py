@@ -32,7 +32,8 @@ except:
 
 class CAMIPTiming(CAMIP):
     def __init__(self, connections_table, io_capacity=3,
-                 timing_cost_disabled=False, wire_length_factor=0.5):
+                 timing_cost_disabled=False, wire_length_factor=0.5,
+                 criticality_exp=10.):
         self.timing_cost_disabled = timing_cost_disabled
         self.wire_length_factor = wire_length_factor
         super(CAMIPTiming, self).__init__(connections_table, io_capacity)
@@ -60,7 +61,7 @@ class CAMIPTiming(CAMIP):
                                'p_y_prime':
                                dv.view_from_vector(self.p_y_prime)}
 
-        self.final_criticality_exp = 8.
+        self.final_criticality_exp = criticality_exp
         self.criticality_exp = 1.
         self.first_max_move_distance = max(*self.s2p.extent)
         self.delta_r = self.first_max_move_distance - 1.
@@ -80,12 +81,16 @@ class CAMIPTiming(CAMIP):
                                 self.delta_e_over_delta_r)
         self._arrival_times = self.arrival_times()
         self._departure_times = self.departure_times()
-        self.critical_path = self._arrival_times.max()
+        self.critical_path = self._arrival_times[:].max()
 
         # Delay targets that have a synchronous logic block as a source _must_
         # treat the longest path delay of the source as 0!
-        self._arrival_times[self.sync_block_keys] = 0
-        self._departure_times[self.sync_block_keys] = 0
+        arrival_times = self._arrival_times[:]
+        arrival_times[self.sync_block_keys] = 0
+        self._arrival_times[:] = arrival_times
+        departure_times = self._departure_times[:]
+        departure_times[self.sync_block_keys] = 0
+        self._departure_times[:] = departure_times
 
     def arrival_times(self):
         result = self.arrival_data.update_position_based_longest_paths(
@@ -138,30 +143,30 @@ class CAMIPTiming(CAMIP):
                             arch_data.v['delays'], arch_data.nrows,
                             arch_data.ncols, d.v['delay_prime'])
 
-        block_arrays = DeviceDataFrame({'arrival': self._arrival_times,
-                                        'departure': self._departure_times})
-        block_arrays.add('arrival_cost', dtype=np.float32)
-        block_arrays.add('departure_cost', dtype=np.float32)
-        block_arrays.v['arrival_cost'][:] = 0
-        block_arrays.v['departure_cost'][:] = 0
-        block_arrays.v['departure_cost'][:] = 0
-        block_arrays.v['arrival']
+        block_arrays = DeviceDataFrame({'arrival_cost':
+                                        np.zeros(self._arrival_times.size,
+                                                 dtype=np.float32),
+                                        'departure_cost':
+                                        np.zeros(self._departure_times.size,
+                                                 dtype=np.float32)})
+        #block_arrays.v['arrival_cost'][:] = 0
+        #block_arrays.v['departure_cost'][:] = 0
 
         connection_cost(self.criticality_exp, a.v['delay'],
-                        block_arrays.v['arrival'], block_arrays.v['departure'],
+                        self._arrival_times, self._departure_times,
                         a.v['source_key'], a.v['target_key'], a.v['cost'],
                         self.critical_path)
         connection_cost(self.criticality_exp, a.v['delay_prime'],
-                        block_arrays.v['arrival'], block_arrays.v['departure'],
+                        self._arrival_times, self._departure_times,
                         a.v['source_key'], a.v['target_key'],
                         a.v['cost_prime'], self.critical_path)
 
         connection_cost(self.criticality_exp, d.v['delay'],
-                        block_arrays.v['arrival'], block_arrays.v['departure'],
+                        self._arrival_times, self._departure_times,
                         d.v['target_key'], d.v['source_key'], d.v['cost'],
                         self.critical_path)
         connection_cost(self.criticality_exp, d.v['delay_prime'],
-                        block_arrays.v['arrival'], block_arrays.v['departure'],
+                        self._arrival_times, self._departure_times,
                         d.v['target_key'], d.v['source_key'],
                         d.v['cost_prime'], self.critical_path)
 
@@ -199,4 +204,9 @@ class CAMIPTiming(CAMIP):
                                         max_timing_delta, delta_n_view)
 
     def get_state(self):
-        return {'critical_path': self.critical_path}
+        return {'critical_path': self.critical_path,
+                'criticality_exp': self.criticality_exp}
+
+    def exit_criteria(self, temperature):
+        #return temperature < 0.00001 * self.theta / self.net_count
+        return temperature < 0.005 / self.net_count

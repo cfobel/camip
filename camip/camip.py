@@ -135,8 +135,9 @@ class VPRSchedule(object):
     def run(self, placer):
         states = []
         total_move_count = 0
-        while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
-               placer.net_count):
+        #while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
+               #placer.net_count):
+        while (not placer.exit_criteria(self.anneal_schedule.temperature)):
             start = time.time()
             total_moves, rejected_moves = self.outer_iteration(placer)
             end = time.time()
@@ -259,6 +260,9 @@ class CAMIP(object):
                                                           .size)
         self._rejected_block_keys = DeviceVectorInt32(self.block_group_keys
                                                       .size)
+
+    def exit_criteria(self, temperature):
+        return temperature < 0.00001 * self.theta / self.net_count
 
     def update_state(self, maximum_move_distance):
         pass

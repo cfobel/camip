@@ -15,21 +15,21 @@ from cyplace_experiments.data.connections_table import ConnectionsTable
 
 
 def place(net_file_namebase, seed, io_capacity=3, inner_num=1., timing=False,
-          draw_enabled=False, critical_path_only=False,
-          wire_length_factor=0.5):
+          critical_path_only=False, wire_length_factor=0.5,
+          criticality_exp=10.):
     connections_table = ConnectionsTable.from_net_list_name(net_file_namebase)
     if timing or critical_path_only:
         if timing:
             critical_path_only = False
-        placer = CAMIPTiming(connections_table, io_capacity=3,
+        placer = CAMIPTiming(connections_table, io_capacity=io_capacity,
                              timing_cost_disabled=critical_path_only,
-                             wire_length_factor=wire_length_factor)
+                             wire_length_factor=wire_length_factor,
+                             criticality_exp=criticality_exp)
     else:
-        placer = CAMIP(connections_table, io_capacity=3)
+        placer = CAMIP(connections_table, io_capacity=io_capacity)
     placer.shuffle_placement()
     print placer.evaluate_placement()
-    schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer,
-                           draw_enabled=draw_enabled)
+    schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer)
     print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature
 
     #import pudb; pudb.set_trace()
@@ -61,14 +61,15 @@ def save_placement(net_file_namebase, block_positions, place_stats,
 
     filters = ts.Filters(complib='blosc', complevel=6)
     if output_path is not None:
-        output_path = str(output_path)
+        context = dict(net_file_namebase=net_file_namebase, seed=seed,
+                       block_positions_sha1=block_positions_sha1)
+        output_path = str(output_path) % context
     else:
         output_file_name = 'placed-%s-s%d-%s.h5' % (net_file_namebase, seed,
                                                     block_positions_sha1)
-        if output_dir is not None:
-            output_path = str(output_dir.joinpath(output_file_name))
-        else:
-            output_path = output_file_name
+        output_path = output_file_name
+    if output_dir is not None:
+        output_path = str(output_dir.joinpath(output_path))
 
     parent_dir = path(output_path).parent
     if parent_dir and not parent_dir.isdir():
@@ -146,7 +147,7 @@ def parse_args(argv=None):
     mutex_group = parser.add_mutually_exclusive_group()
     mutex_group.add_argument('-o', '--output_path', default=None, type=path)
     mutex_group.add_argument('-d', '--output_dir', default=None, type=path)
-    parser.add_argument('-e', '--draw-enabled', action='store_true')
+    parser.add_argument('-e', '--criticality-exp', type=float, default=22.5)
     parser.add_argument('-i', '--inner-num', type=float, default=1.)
     parser.add_argument('-c', '--critical-path', action='store_true',
                         help='Enable critical path calculation.')
@@ -171,8 +172,8 @@ if __name__ == '__main__':
     np.random.seed(args.seed)
     placer, place_stats = place(args.net_file_namebase, args.seed,
                                 args.io_capacity, args.inner_num, args.timing,
-                                args.draw_enabled, args.critical_path,
-                                args.wire_length_factor)
+                                args.critical_path, args.wire_length_factor,
+                                args.criticality_exp)
 
     extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
                       placer.s2p)
@@ -181,8 +182,13 @@ if __name__ == '__main__':
                                  placer.io_capacity)
     block_positions = np.array([placer.p_x[:], placer.p_y[:], p_z],
                                dtype='uint32').T
+    if args.output_path is None and args.timing:
+        args.output_path = ('placed-%(net_file_namebase)s-s%(seed)s-%(block_positions_sha1)s' +
+                            '-e%.2f-w%.2f-I%d.h5' % (args.criticality_exp,
+                                                     args.wire_length_factor,
+                                                     args.io_capacity))
     save_placement(args.net_file_namebase, block_positions, place_stats,
                    output_path=args.output_path, output_dir=args.output_dir,
                    inner_num=args.inner_num, seed=args.seed)
-    if args.draw_enabled:
-        raw_input()
+    #if args.draw_enabled:
+        #raw_input()
