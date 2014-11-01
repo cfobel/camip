@@ -1,3 +1,4 @@
+# coding: utf-8
 '''
 # Concurrent Associated-Moves Iterative Placement (CAMIP) #
 
@@ -38,7 +39,9 @@ from cythrust.si_prefix import si_format
 from cyplace_experiments.data import open_netlists_h5f
 from cyplace_experiments.data.connections_table import (INPUT_BLOCK,
                                                         OUTPUT_BLOCK,
-                                                        LOGIC_BLOCK)
+                                                        LOGIC_BLOCK,
+                                                        CONNECTION_CLOCK,
+                                                        CONNECTION_CLOCK_DRIVER)
 from .CAMIP import (VPRAutoSlotKeyTo2dPosition, random_vpr_pattern,
                     cAnnealSchedule, get_std_dev, pack_io,
                     # Only used in class constructors _(not in main methods)_.
@@ -46,6 +49,7 @@ from .CAMIP import (VPRAutoSlotKeyTo2dPosition, random_vpr_pattern,
 
 from cythrust.device_vector import (DeviceVectorInt32, DeviceVectorFloat32,
                                     DeviceVectorUint32)
+import cythrust.device_vector as dv
 from device.CAMIP import (evaluate_moves as d_evaluate_moves,
                           minus_float as d_minus_float,
                           slot_moves as d_slot_moves,
@@ -186,6 +190,8 @@ class DeviceSparseMatrix(object):
 class CAMIP(object):
     def __init__(self, connections_table, io_capacity=3):
         self._connections_table = connections_table
+        self.connections = self._connections_table.connections
+        # TODO: Only optimize using non-global connections/nets.
         self.io_capacity = io_capacity
 
         self.io_count = connections_table.io_count
@@ -221,23 +227,23 @@ class CAMIP(object):
         self.p_y_prime = DeviceVectorInt32(self.block_count)
 
         self.X = DeviceSparseMatrix(
-            connections_table.connections.sink_key,
-            connections_table.connections.net_key)
+            self.connections.sink_key,
+            self.connections.net_key)
 
-        self._e_x = DeviceVectorFloat32(self.X.col.size)
-        self._e_x2 = DeviceVectorFloat32(self.X.col.size)
-        self._e_y = DeviceVectorFloat32(self.X.col.size)
-        self._e_y2 = DeviceVectorFloat32(self.X.col.size)
-        self._e_c = DeviceVectorFloat32(self.X.col.size)
+        self._e_x = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
+        self._e_x2 = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
+        self._e_y = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
+        self._e_y2 = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
+        self._e_c = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
 
         self.omega = DeviceSparseMatrix(
-            connections_table.connections.sink_key,
-            connections_table.connections.net_key)
+            self.connections.sink_key,
+            self.connections.net_key)
         self.omega_prime = DeviceSparseMatrix(
-            connections_table.connections.sink_key,
-            connections_table.connections.net_key,
-            np.ones(len(connections_table), dtype=np.float32))
-        self._block_keys = DeviceVectorInt32(len(connections_table))
+            self.connections.sink_key,
+            self.connections.net_key,
+            np.ones(len(self.connections), dtype=np.float32))
+        self._block_keys = DeviceVectorInt32(len(self.connections))
 
         d_sort_netlist_keys(self.X.col, self.X.row)
         d_sort_netlist_keys(self.omega.row, self.omega.col)
@@ -245,21 +251,81 @@ class CAMIP(object):
         self.omega_prime.row[:] = self.omega.row[:]
         self.omega_prime.col[:] = self.omega.col[:]
 
-        self.r_inv = DeviceVectorFloat32(self.net_count)
-        d_sum_float_by_key(self.X.col, self.omega_prime.data, self._block_keys,
-                           self.omega_prime.data)
-        self.r_inv[:] = np.reciprocal(self.omega_prime.data[:self.net_count])
+        self.r_inv = dv.from_array(np.ones(self.net_count, dtype=np.float32))
+        self.non_global_net_count = d_sum_float_by_key(self.X.col,
+                                                       self.omega_prime.data,
+                                                       self._block_keys,
+                                                       self.omega_prime.data)
+        r_inv = self.r_inv[:]
+        r_inv[self._block_keys[:self.non_global_net_count]] = np.reciprocal(
+            self.omega_prime.data[:self.non_global_net_count])
+        self.r_inv[:] = r_inv
         self.block_group_keys = DeviceVectorInt32(self.block_count)
         self.block_group_keys_sorted = DeviceVectorInt32(self.block_count)
         self._group_block_keys = DeviceVectorInt32(self.block_group_keys.size)
-        self._delta_s = DeviceVectorFloat32(self.block_count)
-        self._n_c = DeviceVectorFloat32(len(connections_table))
-        self.delta_n = DeviceVectorFloat32(self.block_count)
+        self._delta_s = dv.from_array(np.zeros(self.block_count,
+                                               dtype=np.float32))
+        self._n_c = dv.from_array(np.zeros(len(self.connections),
+                                           dtype=np.float32))
+        self.delta_n = dv.from_array(np.zeros(len(self.connections),
+                                              dtype=np.float32))
         self._packed_block_group_keys = DeviceVectorInt32(self
                                                           ._group_block_keys
                                                           .size)
         self._rejected_block_keys = DeviceVectorInt32(self.block_group_keys
                                                       .size)
+        self.omega_prime.data[:] = 0
+
+    def get_net_elements(self):
+        return pd.DataFrame(dict([(k, getattr(self, '_e_%s' %
+                                              k)[:self.net_count]) for k in
+                                  ('x', 'x2', 'y', 'y2')]))
+
+    def connection_data(self):
+        data = pd.DataFrame({'sink_key': self.omega_prime.row[:], 'net_key': self.omega_prime.col[:]})
+        data['p_x'] = self.p_x[:][data['sink_key']]
+        data['p_y'] = self.p_y[:][data['sink_key']]
+        data['p_x2'] = data['p_x'] ** 2
+        data['p_y2'] = data['p_y'] ** 2
+        data.head()
+        data['p_x_prime'] = self.p_x_prime[:][data['sink_key']]
+        data['p_y_prime'] = self.p_y_prime[:][data['sink_key']]
+        data['p_x2_prime'] = data['p_x_prime'] ** 2
+        data['p_y2_prime'] = data['p_y_prime'] ** 2
+        data['r_inv'] = self.r_inv[:][data['net_key']]
+        data.sort('net_key', inplace=True)
+        return data
+
+    def star_plus_elements(self, data):
+        elements = data.groupby('net_key', as_index=False).apply(
+            lambda u: pd.DataFrame(dict([(k, np.sum(getattr(u, 'p_%s' % k)))
+                                         for k in ('x', 'x2', 'y', 'y2')],
+                                        index=[u.net_key.iloc[0]])))
+        return elements
+
+    def star_plus_delta(self, data):
+        star_plus = data.groupby('net_key').apply(lambda u: 1.59 *
+                                                  (np.sqrt(np.sum(u.p_x2) -
+                                                           np.sum(u.p_x) ** 2 *
+                                                           u.r_inv.iloc[0] + 1)
+                                                   + np.sqrt(np.sum(u.p_y2) -
+                                                             np.sum(u.p_y) ** 2
+                                                             * u.r_inv.iloc[0]
+                                                             + 1)))
+        star_plus_prime = data.groupby('net_key').apply(lambda u: 1.59 *
+                                                        (np.sqrt(np.sum(u.p_x2_prime)
+                                                                 -
+                                                                 np.sum(u.p_x_prime)
+                                                                 ** 2 *
+                                                                 u.r_inv.iloc[0]
+                                                                 + 1) +
+                                                         np.sqrt(np.sum(u.p_y2_prime)
+                                                                 -
+                                                                 np.sum(u.p_y_prime)
+                                                                 ** 2 *
+                                                                 u.r_inv.iloc[0]
+                                                                 + 1)))
+        return star_plus, star_plus_prime
 
     def exit_criteria(self, temperature):
         return temperature < 0.00001 * self.theta / self.net_count
@@ -322,6 +388,43 @@ class CAMIP(object):
 
         # `theta`: $\theta =$ total placement cost
         # Thrust `transform`.
+
+        # # TODO: FIX per-block net-cost data gathering #
+        #
+        # ## Problem ##
+        #  - `e_x`, `e_y`, etc. are indexed by net keys that are present in the
+        #    `self.connections` list.
+        #  - _However_, when computing the per-block cost, we do a gather from
+        #    `e_c` assuming that `e_c` is indexed by the index of _all_ nets
+        #    in the net-list.
+        #
+        # ## Proposed solutions ##
+        #
+        #  1. Reassign net-keys in connection list
+        #    a. Partition connections into non-global/global.
+        #
+        #                                             non-global
+        #        0                                    net count
+        #        |                                        |
+        #        ╔════════════════════════════════════════╗┌──────────────────┐
+        #        ║ non-global net keys                    ║│ global net keys  │
+        #        ╚════════════════════════════════════════╝└──────────────────┘
+        #
+        #    b. Reassign net-keys starting from 0 for non-global nets.        .
+        #      * Start with new contiguous range of net keys, `[0, net_count]`.
+        #
+        #                                             non-global            total
+        #        0                                    net count           net count
+        #        |                                        |                   |
+        #        ┌────────────────────────────────────────────────────────────┐
+        #        │ new net keys                                               │
+        #        └────────────────────────────────────────────────────────────┘
+        #
+        #      * Sort "new net keys" by the partitioned net key values.
+        #      * Result is the mapping from original net keys to new net keys.
+        #    c. Scatter new net-keys starting from 0 for non-global nets.
+        #      * Use permutation copy to update any data structures containing
+        #        original net keys with new net keys, using "net net keys" map.
         self.theta = d_star_plus_2d(self._e_x, self._e_x2, self._e_y,
                                     self._e_y2, self.r_inv, 1.59, self._e_c)
 
