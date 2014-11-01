@@ -188,16 +188,36 @@ class DeviceSparseMatrix(object):
 
 
 class CAMIP(object):
-    def __init__(self, connections_table, io_capacity=3):
+    def __init__(self, connections_table, io_capacity=3, include_clock=False):
         self._connections_table = connections_table
-        self.connections = self._connections_table.connections
-        # TODO: Only optimize using non-global connections/nets.
+
+        # __NB__ The code now allows for _any_ connections to be filtered out.
+        # Only blocks and nets referenced by the selected connections will
+        # affect _wire-length_ optimization.
+        # For example, a random mask of some the connections could be used,
+        # like so:
+        #
+        #     exclude_count = int(self._connections_table.connections.shape[0] / 30.)
+        #     include_count = int(self._connections_table.connections.shape[0] -
+                                 #exclude_count)
+        #     mask = np.array(include_count * [True] + exclude_count * [False])
+        #     np.random.shuffle(mask)
+
+        # Only optimize using non-global connections/nets _(i.e., filter out
+        # any global net connections)_.
+        if include_clock:
+            mask = np.ones(connections_table.connections.shape[0], dtype=np.bool)
+        else:
+            mask = ~connections_table.connections.type.isin([CONNECTION_CLOCK,
+                                                             CONNECTION_CLOCK_DRIVER])
+        self.connections = self._connections_table.filter(mask)
         self.io_capacity = io_capacity
 
         self.io_count = connections_table.io_count
         self.logic_count = connections_table.logic_count
         self.block_count = self.io_count + self.logic_count
-        self.net_count = connections_table.net_count
+        #self.net_count = connections_table.net_count
+        self.net_count = self.connections.net_key.unique().size
 
         self.s2p = VPRAutoSlotKeyTo2dPosition(self.io_count, self.logic_count,
                                               io_capacity)
@@ -298,9 +318,10 @@ class CAMIP(object):
 
     def star_plus_elements(self, data):
         elements = data.groupby('net_key', as_index=False).apply(
-            lambda u: pd.DataFrame(dict([(k, np.sum(getattr(u, 'p_%s' % k)))
-                                         for k in ('x', 'x2', 'y', 'y2')],
-                                        index=[u.net_key.iloc[0]])))
+            lambda u: pd.DataFrame(OrderedDict(
+                [('%s%s' % (k, p), np.sum(getattr(u, 'p_%s%s' % (k, p))))
+                 for p in ('', '_prime') for k in ('x', 'x2', 'y', 'y2')]),
+                index=[u.net_key.iloc[0]]))
         return elements
 
     def star_plus_delta(self, data):
@@ -388,43 +409,6 @@ class CAMIP(object):
 
         # `theta`: $\theta =$ total placement cost
         # Thrust `transform`.
-
-        # # TODO: FIX per-block net-cost data gathering #
-        #
-        # ## Problem ##
-        #  - `e_x`, `e_y`, etc. are indexed by net keys that are present in the
-        #    `self.connections` list.
-        #  - _However_, when computing the per-block cost, we do a gather from
-        #    `e_c` assuming that `e_c` is indexed by the index of _all_ nets
-        #    in the net-list.
-        #
-        # ## Proposed solutions ##
-        #
-        #  1. Reassign net-keys in connection list
-        #    a. Partition connections into non-global/global.
-        #
-        #                                             non-global
-        #        0                                    net count
-        #        |                                        |
-        #        ╔════════════════════════════════════════╗┌──────────────────┐
-        #        ║ non-global net keys                    ║│ global net keys  │
-        #        ╚════════════════════════════════════════╝└──────────────────┘
-        #
-        #    b. Reassign net-keys starting from 0 for non-global nets.        .
-        #      * Start with new contiguous range of net keys, `[0, net_count]`.
-        #
-        #                                             non-global            total
-        #        0                                    net count           net count
-        #        |                                        |                   |
-        #        ┌────────────────────────────────────────────────────────────┐
-        #        │ new net keys                                               │
-        #        └────────────────────────────────────────────────────────────┘
-        #
-        #      * Sort "new net keys" by the partitioned net key values.
-        #      * Result is the mapping from original net keys to new net keys.
-        #    c. Scatter new net-keys starting from 0 for non-global nets.
-        #      * Use permutation copy to update any data structures containing
-        #        original net keys with new net keys, using "net net keys" map.
         self.theta = d_star_plus_2d(self._e_x, self._e_x2, self._e_y,
                                     self._e_y2, self.r_inv, 1.59, self._e_c)
 
@@ -496,14 +480,24 @@ class CAMIP(object):
         [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
         '''
         # Thrust `reduce_by_key` over a `transform` iterator.
-        d_evaluate_moves(self.omega_prime.row, self.omega_prime.col, self.p_x,
-                         self.p_x_prime, self._e_x, self._e_x2, self.p_y,
-                         self.p_y_prime, self._e_y, self._e_y2, self.r_inv,
-                         1.59, self._block_keys, self.omega_prime.data)
+        evaled_block_count = d_evaluate_moves(self.omega_prime.row,
+                                              self.omega_prime.col, self.p_x,
+                                              self.p_x_prime, self._e_x,
+                                              self._e_x2, self.p_y,
+                                              self.p_y_prime, self._e_y,
+                                              self._e_y2, self.r_inv, 1.59,
+                                              self._block_keys,
+                                              self.omega_prime.data)
 
         # Compute move-deltas using a Thrust `reduce_by_key` call over a
         # `transform` iterator.
-        d_minus_float(self.omega_prime.data, self._n_c, self.delta_n)
+        #d_minus_float(self.omega_prime.data, self._n_c, self.delta_n)
+        delta_n = np.zeros(self.delta_n.size, dtype=self.delta_n.dtype)
+        delta_n[self._block_keys[:evaled_block_count]] = (
+            self.omega_prime.data[:evaled_block_count] -
+            self._n_c[:evaled_block_count])
+        self.delta_n[:] = delta_n
+        #d_minus_float(self.omega_prime.data, self._n_c, self.delta_n)
 
     @profile
     def assess_groups(self, temperature):

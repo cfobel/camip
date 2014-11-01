@@ -197,7 +197,7 @@ cpdef evaluate_moves(int32_t[:] row, int32_t[:] col, int32_t[:] p_x,
     cdef unpack_quinary_args[evaluate_move] *eval_func_tuple = \
         new unpack_quinary_args[evaluate_move](deref(eval_func))
 
-    accumulate_by_key(
+    cdef size_t reduced_count = <int32_t*>accumulate_by_key(
         &row[0], &row[0] + count,
         make_transform_iterator(
             make_zip_iterator(
@@ -220,7 +220,8 @@ cpdef evaluate_moves(int32_t[:] row, int32_t[:] col, int32_t[:] p_x,
                                 make_permutation_iterator(&p_x_prime[0], &row[0]),
                                 make_permutation_iterator(&r_inv[0], &col[0]))),
                         deref(eval_func_tuple)))), deref(plus2_tuple)),
-        &reduced_keys[0], &reduced_values[0])
+        &reduced_keys[0], &reduced_values[0]).first - &reduced_keys[0]
+    return reduced_count
 
 
 cdef class cAnnealSchedule:

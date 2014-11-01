@@ -31,12 +31,13 @@ except:
 
 
 class CAMIPTiming(CAMIP):
-    def __init__(self, connections_table, io_capacity=3,
+    def __init__(self, connections_table, io_capacity=3, include_clock=False,
                  timing_cost_disabled=False, wire_length_factor=0.5,
                  criticality_exp=10.):
         self.timing_cost_disabled = timing_cost_disabled
         self.wire_length_factor = wire_length_factor
-        super(CAMIPTiming, self).__init__(connections_table, io_capacity)
+        super(CAMIPTiming, self).__init__(connections_table, io_capacity,
+                                          include_clock=include_clock)
 
         self.arrival_data = PathTimingData(get_arch_data(*self.s2p.extent),
                                            connections_table,

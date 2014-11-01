@@ -15,25 +15,26 @@ import pandas as pd
 from cyplace_experiments.data.connections_table import ConnectionsTable
 
 
-def place(net_file_namebase, seed, io_capacity=3, inner_num=1., timing=False,
-          critical_path_only=False, wire_length_factor=0.5,
-          criticality_exp=10.):
+def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
+          include_clock=False, timing=False, critical_path_only=False,
+          wire_length_factor=0.5, criticality_exp=10.):
     connections_table = ConnectionsTable.from_net_list_name(net_file_namebase)
     if timing or critical_path_only:
         if timing:
             critical_path_only = False
         placer = CAMIPTiming(connections_table, io_capacity=io_capacity,
+                             include_clock=include_clock,
                              timing_cost_disabled=critical_path_only,
                              wire_length_factor=wire_length_factor,
                              criticality_exp=criticality_exp)
     else:
-        placer = CAMIP(connections_table, io_capacity=io_capacity)
+        placer = CAMIP(connections_table, include_clock=include_clock,
+                       io_capacity=io_capacity)
     placer.shuffle_placement()
     print placer.evaluate_placement()
     schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer)
     print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature
 
-    #import pudb; pudb.set_trace()
     states = schedule.run(placer)
 
     # Convert list of state dictionaries into a `pandas.DataFrame`.
@@ -150,6 +151,8 @@ def parse_args(argv=None):
     mutex_group.add_argument('-d', '--output_dir', default=None, type=path)
     parser.add_argument('-e', '--criticality-exp', type=float, default=22.5)
     parser.add_argument('-i', '--inner-num', type=float, default=1.)
+    parser.add_argument('-C', '--include-clock', action='store_true',
+                        help='Include clock in wire-length optimization.')
     parser.add_argument('-c', '--critical-path', action='store_true',
                         help='Enable critical path calculation.')
     parser.add_argument('-t', '--timing', action='store_true',
@@ -172,7 +175,8 @@ if __name__ == '__main__':
 
     np.random.seed(args.seed)
     placer, place_stats = place(args.net_file_namebase, args.seed,
-                                args.io_capacity, args.inner_num, args.timing,
+                                args.io_capacity, args.inner_num,
+                                args.include_clock, args.timing,
                                 args.critical_path, args.wire_length_factor,
                                 args.criticality_exp)
 

@@ -49,7 +49,7 @@ cpdef evaluate_moves(DeviceVectorInt32 row, DeviceVectorInt32 col,
     cdef unpack_quinary_args[evaluate_move] *eval_func_tuple = \
         new unpack_quinary_args[evaluate_move](deref(eval_func))
 
-    accumulate_by_key(
+    cdef size_t reduced_count = <device_vector[int32_t].iterator>accumulate_by_key(
         row._vector.begin(), row._vector.end(),
         make_transform_iterator(
             make_zip_iterator(
@@ -72,10 +72,11 @@ cpdef evaluate_moves(DeviceVectorInt32 row, DeviceVectorInt32 col,
                                 make_permutation_iterator(p_x_prime._vector.begin(), row._vector.begin()),
                                 make_permutation_iterator(r_inv._vector.begin(), col._vector.begin()))),
                         deref(eval_func_tuple)))), deref(plus2_tuple)),
-        reduced_keys._vector.begin(), reduced_values._vector.begin())
+        reduced_keys._vector.begin(), reduced_values._vector.begin()).first - reduced_keys._vector.begin()
     del plus2_tuple
     del eval_func
     del eval_func_tuple
+    return reduced_count
 
 
 def minus_float(DeviceVectorFloat32 n_c, DeviceVectorFloat32 n_c_prime,
