@@ -6,30 +6,32 @@ from path_helpers import path
 from table_layouts import (get_PLACEMENT_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_DATAFRAME_LAYOUT)
-from camip import CAMIP, VPRSchedule
+from camip import CAMIP, VPRSchedule, Placement
 from camip.timing import CAMIPTiming
 from camip.device.CAMIP import extract_positions
 import numpy as np
 import tables as ts
 import pandas as pd
-from cyplace_experiments.data.connections_table import ConnectionsTable
+from cyplace_experiments.data.connections_table import (ConnectionsTable,
+                                                        get_connections_frame)
 
 
 def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
-          include_clock=False, timing=False, critical_path_only=False,
-          wire_length_factor=0.5, criticality_exp=10.):
+          timing=False, critical_path_only=False, wire_length_factor=0.5,
+          criticality_exp=10.):
     connections_table = ConnectionsTable.from_net_list_name(net_file_namebase)
+    import pudb; pudb.set_trace()
     if timing or critical_path_only:
         if timing:
             critical_path_only = False
         placer = CAMIPTiming(connections_table, io_capacity=io_capacity,
-                             include_clock=include_clock,
                              timing_cost_disabled=critical_path_only,
                              wire_length_factor=wire_length_factor,
                              criticality_exp=criticality_exp)
     else:
-        placer = CAMIP(connections_table, include_clock=include_clock,
-                       io_capacity=io_capacity)
+        connections = get_connections_frame(net_file_namebase)
+        placement = Placement(connections, io_capacity)
+        placer = CAMIP(connections, placement)
     placer.shuffle_placement()
     print placer.evaluate_placement()
     schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer)
@@ -176,9 +178,8 @@ if __name__ == '__main__':
     np.random.seed(args.seed)
     placer, place_stats = place(args.net_file_namebase, args.seed,
                                 args.io_capacity, args.inner_num,
-                                args.include_clock, args.timing,
-                                args.critical_path, args.wire_length_factor,
-                                args.criticality_exp)
+                                args.timing, args.critical_path,
+                                args.wire_length_factor, args.criticality_exp)
 
     extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
                       placer.s2p)

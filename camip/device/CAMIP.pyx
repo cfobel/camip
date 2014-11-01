@@ -7,7 +7,11 @@ import numpy as np
 cimport numpy as np
 
 from cythrust.device_vector cimport (DeviceVectorInt32, DeviceVectorUint32,
-                                     DeviceVectorFloat32, DeviceVectorInt8)
+                                     DeviceVectorFloat32, DeviceVectorInt8,
+                                     DeviceVectorViewInt32,
+                                     DeviceVectorViewUint32,
+                                     DeviceVectorViewFloat32,
+                                     DeviceVectorViewInt8)
 from cythrust.thrust.copy cimport copy_n, copy_if_w_stencil, copy
 from cythrust.thrust.device_vector cimport device_vector
 from cythrust.thrust.fill cimport fill_n
@@ -32,6 +36,8 @@ from cythrust.thrust.tuple cimport (make_tuple2, make_tuple3, make_tuple4,
 from camip.CAMIP cimport (VPRAutoSlotKeyTo2dPosition, evaluate_move,
                           VPRMovePattern, c_star_plus_2d, block_group_key,
                           assess_group, delay, arrival_delay)
+from cythrust.device_vector.sort import sort_int32_by_int32_key
+from cythrust.device_vector.sum import sum_int32_by_int32_key
 
 
 cpdef evaluate_moves(DeviceVectorInt32 row, DeviceVectorInt32 col,
@@ -254,11 +260,6 @@ cpdef equal_count_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b):
 
 cpdef sequence_int32(DeviceVectorInt32 a):
     sequence(a._vector.begin(), a._vector.begin() + <size_t>a.size)
-
-
-cpdef sort_netlist_keys(DeviceVectorInt32 keys1, DeviceVectorInt32 keys2):
-    sort_by_key(keys1._vector.begin(), keys1._vector.begin() +
-                <size_t>keys1.size, keys2._vector.begin())
 
 
 cpdef permuted_nonmatch_inclusive_scan_int32(DeviceVectorInt32 elements,

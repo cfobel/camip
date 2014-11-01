@@ -165,7 +165,7 @@ cpdef sort_float_coo(int32_t[:] keys1, int32_t[:] keys2, float[:] values):
                 make_zip_iterator(make_tuple2(&keys2[0], &values[0])))
 
 
-cpdef sort_netlist_keys(int32_t[:] keys1, int32_t[:] keys2):
+cpdef sort_int32_by_int32_key(int32_t[:] keys1, int32_t[:] keys2):
     sort_by_key(&keys1[0], &keys1[0] + <size_t>keys1.size, &keys2[0])
 
 

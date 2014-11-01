@@ -45,11 +45,13 @@ from cyplace_experiments.data.connections_table import (INPUT_BLOCK,
 from .CAMIP import (VPRAutoSlotKeyTo2dPosition, random_vpr_pattern,
                     cAnnealSchedule, get_std_dev, pack_io,
                     # Only used in class constructors _(not in main methods)_.
-                    sort_netlist_keys, sum_float_by_key)
+                    sum_float_by_key)
 
 from cythrust.device_vector import (DeviceVectorInt32, DeviceVectorFloat32,
                                     DeviceVectorUint32)
+from cythrust import DeviceDataFrame, DeviceVectorCollection
 import cythrust.device_vector as dv
+import device.CAMIP as _CAMIP
 from device.CAMIP import (evaluate_moves as d_evaluate_moves,
                           minus_float as d_minus_float,
                           slot_moves as d_slot_moves,
@@ -63,7 +65,6 @@ from device.CAMIP import (evaluate_moves as d_evaluate_moves,
                           d_compute_block_group_keys,
                           equal_count_uint32 as d_equal_count_uint32,
                           sequence_int32 as d_sequence_int32,
-                          sort_netlist_keys as d_sort_netlist_keys,
                           permuted_nonmatch_inclusive_scan_int32 as
                           d_permuted_nonmatch_inclusive_scan_int32,
                           assess_groups as d_assess_groups,
@@ -187,10 +188,150 @@ class DeviceSparseMatrix(object):
             self.data[:] = data[:]
 
 
-class CAMIP(object):
-    def __init__(self, connections_table, io_capacity=3, include_clock=False):
-        self._connections_table = connections_table
+class Placement(object):
+    '''
+    This class holds a representation of the placement in two data structures.
 
+    The first data structure contains per-block data, including:
+
+     - The block label.
+     - The block type.
+     - The block slot assignment.
+
+    The second data structure contains per-slot data, including:
+
+     - The slot type.
+     - The slot assignment.
+    '''
+
+    def __init__(self, block_data, io_capacity, allocator=dv):
+        '''
+        The block data frame must be of the following form:
+
+        | Block label | Block type   |
+        |-------------|--------------|
+        | b_out0      | OUTPUT_BLOCK |
+        | b_out1      | OUTPUT_BLOCK |
+        | b_in0       | INPUT_BLOCK  |
+        | b_in1       | INPUT_BLOCK  |
+
+        Internally, this is converted to a purely numeric form in a
+        `DeviceDataFrame`.
+        '''
+        self._block_data = (block_data[['block_key', 'block_type',
+                                        'block_label']].sort('block_key')
+                            .drop_duplicates('block_key')
+                            .set_index('block_key'))
+        del block_data
+        self.block_data = DeviceDataFrame(self._block_data[['block_type']],
+                                          allocator=allocator)
+        self.block_data.add('block_key',
+                            self._block_data.index.values.astype(np.int32))
+        self.block_data.add('slot_key', dtype=np.int32)
+
+        type_counts = self._block_data.groupby('block_type').apply(lambda x:
+                                                                   len(x))
+        self.input_count = type_counts.loc[INPUT_BLOCK]
+        self.output_count = type_counts.loc[OUTPUT_BLOCK]
+        self.s2p = VPRAutoSlotKeyTo2dPosition(self.input_count +
+                                              self.output_count,
+                                              type_counts[LOGIC_BLOCK],
+                                              io_capacity)
+        self.slot_data = DeviceDataFrame({'block_key':
+                                          np.empty(self.s2p.total_slot_count,
+                                                   dtype=np.uint32)},
+                                         allocator=allocator)
+        self.slot_data.v['block_key'][:] = self.block_count
+
+        self.block_type_keys = OrderedDict([
+            (k, allocator.from_array(self._block_data
+                                     .loc[self._block_data.block_type ==
+                                          eval('%s_BLOCK' % k.upper())].index
+                                     .values.astype(np.int32)))
+            for k in ('input', 'output', 'logic')])
+
+        slot_block_keys = self.slot_data['block_key'][:]
+        # Fill IO slots.
+        slot_block_keys[:self.input_count] = self.block_type_keys['input'][:]
+        slot_block_keys[self.input_count:self.io_count] = \
+            self.block_type_keys['output'][:]
+
+        ## Fill logic slots.
+        slot_block_keys[self.io_slot_count:self.io_slot_count +
+                        self.logic_count] = self.block_type_keys['logic'][:]
+        self.slot_data.v['block_key'][:] = slot_block_keys
+        self._sync_slot_block_keys_to_block_slot_keys()
+
+    @property
+    def io_slot_count(self):
+        return self.s2p.io_slot_count
+
+    @property
+    def block_count(self):
+        return self.io_count + self.logic_count
+
+    @property
+    def io_count(self):
+        return self.s2p.io_count
+
+    @property
+    def logic_count(self):
+        return self.s2p.logic_count
+
+    def shuffle_placement(self):
+        '''
+        Shuffle placement permutation.
+
+        The shuffle is aware of IO and logic slots in the placement, and will
+        keep IO and logic within the corresponding areas of the permutation.
+        '''
+        slot_block_keys = self.slot_data['block_key'][:]
+        np.random.shuffle(slot_block_keys[:self.s2p.io_slot_count].values)
+        np.random.shuffle(slot_block_keys[self.s2p.io_slot_count:].values)
+        self.slot_data.v['block_key'][:] = slot_block_keys[:]
+        self._sync_slot_block_keys_to_block_slot_keys()
+
+    def _sync_block_slot_keys_to_slot_block_keys(self):
+        '''
+        Update `slot_block_keys` based on `block_slot_keys`.
+
+        Useful when updating the permutation slot contents directly _(e.g.,
+        shuffling the contents of the permutation slots)_.
+        '''
+        slot_block_keys = self.slot_data['block_key'][:]
+        slot_block_keys[:] = self.block_count
+        slot_block_keys[self.block_data['slot_key'].values] = \
+            self.block_data['block_key'].values
+        self.slot_data.v['block_key'][:] = slot_block_keys[:].values
+
+    def _sync_slot_block_keys_to_block_slot_keys(self):
+        '''
+        Update `block_slot_keys` based on `slot_block_keys`.
+        '''
+        occupied = np.where(self.slot_data['block_key'].values < self.block_count)
+        block_slot_keys = self.block_data['slot_key'].values
+        slot_block_keys = self.slot_data['block_key'].values
+        block_slot_keys[slot_block_keys[occupied[0]]] = occupied[0]
+        self.block_data.v['slot_key'][:] = block_slot_keys
+
+    @property
+    def slot_block_keys(self):
+        # Copy the final position of each block to the slot-to-block-key
+        # mapping.
+        self._sync_block_slot_keys_to_slot_block_keys()
+
+        # To make output compatible with VPR, we must pack blocks in IO tiles
+        # to fill IO tile-slots contiguously.
+        slot_block_keys = self.slot_data['block_key'][:]
+        pack_io(slot_block_keys[:self.io_slot_count].values,
+                self.s2p.io_capacity)
+        self.slot_data.v['block_key'][:] = slot_block_keys[:]
+        self._sync_slot_block_keys_to_block_slot_keys()
+        return self.slot_data.v['block_key']
+
+
+class CAMIP(object):
+    def __init__(self, connections, placement, allocator=dv):
         # __NB__ The code now allows for _any_ connections to be filtered out.
         # Only blocks and nets referenced by the selected connections will
         # affect _wire-length_ optimization.
@@ -205,96 +346,89 @@ class CAMIP(object):
 
         # Only optimize using non-global connections/nets _(i.e., filter out
         # any global net connections)_.
-        if include_clock:
-            mask = np.ones(connections_table.connections.shape[0], dtype=np.bool)
-        else:
-            mask = ~connections_table.connections.type.isin([CONNECTION_CLOCK,
-                                                             CONNECTION_CLOCK_DRIVER])
-        self.connections = self._connections_table.filter(mask)
-        self.io_capacity = io_capacity
+        #if include_clock:
+            #mask = np.ones(connections_table.connections.shape[0], dtype=np.bool)
+        #else:
+            #mask = ~connections_table.connections.type.isin([CONNECTION_CLOCK,
+                                                             #CONNECTION_CLOCK_DRIVER])
+        block_keys = connections.block_key.unique()
+        self.CAMIP = _CAMIP
+        self.block_count = block_keys.size
+        self.net_count = connections.net_key.unique().size
 
-        self.io_count = connections_table.io_count
-        self.logic_count = connections_table.logic_count
-        self.block_count = self.io_count + self.logic_count
-        #self.net_count = connections_table.net_count
-        self.net_count = self.connections.net_key.unique().size
+        self.block_data = DeviceDataFrame({'block_key':
+                                           block_keys.astype(np.uint32),
+                                           'slot_key':
+                                           placement.block_data['slot_key'][:]
+                                           .values[block_keys]
+                                           .astype(np.uint32)},
+                                          allocator=allocator)
+        self.block_data.add('slot_key_prime', dtype=np.uint32)
+        self.block_data.add('p_x', dtype=np.int32)
+        self.block_data.add('p_y', dtype=np.int32)
+        self.block_data.add('p_x_prime', dtype=np.int32)
+        self.block_data.add('p_y_prime', dtype=np.int32)
+        self.block_data.add('delta_cost', dtype=np.float32)
+        self.block_data.add('group_key', dtype=np.int32)
+        self.block_data.add('sorted_group_key', dtype=np.int32)
+        self.block_data.add('packed_group_key', dtype=np.int32)
+        self.block_data.add('rejected_block_key', dtype=np.int32)
 
-        self.s2p = VPRAutoSlotKeyTo2dPosition(self.io_count, self.logic_count,
-                                              io_capacity)
-        self.slot_block_keys = DeviceVectorUint32(self.s2p.total_slot_count)
-        self.slot_block_keys[:] = self.block_count
+        self.group_data = DeviceDataFrame({'block_key':
+                                           np.empty(self.block_count,
+                                                    dtype=np.int32)},
+                                          allocator=allocator)
+        self.group_data.add('delta_cost', dtype=np.float32)
+        self.net_link_data = DeviceDataFrame(
+            OrderedDict([('net_key', connections.net_key.values
+                          .astype(np.int32)),
+                         ('block_key', connections.block_key.values
+                          .astype(np.int32))]), allocator=allocator)
+        self.CAMIP.sort_int32_by_int32_key(self.net_link_data.v['net_key'],
+                                           self.net_link_data.v['block_key'])
 
-        # Fill IO slots.
-        self.slot_block_keys[:self.io_count] = \
-            connections_table.io_block_keys()
+        self.net_link_data.add('x', dtype=np.float32)
+        self.net_link_data.add('x2', dtype=np.float32)
+        self.net_link_data.add('y', dtype=np.float32)
+        self.net_link_data.add('y2', dtype=np.float32)
+        self.net_link_data.add('cost', dtype=np.float32)
+        self.net_link_data.add('reduced_keys', dtype=np.int32)
 
-        # Fill logic slots.
-        logic_start = self.s2p.io_slot_count
-        logic_end = logic_start + self.logic_count
-        self.slot_block_keys[logic_start:logic_end] = \
-            connections_table.logic_block_keys()
+        self.block_link_data = DeviceDataFrame(
+            OrderedDict([('block_key', connections.block_key.values
+                          .astype(np.int32)),
+                         ('net_key', connections.net_key.values
+                          .astype(np.int32))]), allocator=allocator)
 
-        # Create reverse-mapping, from each block-key to the permutation slot
-        # the block occupies.
-        self.block_slot_keys = DeviceVectorUint32(self.block_count)
-        self.block_slot_moves = DeviceVectorInt32(self.block_count)
-        self.block_slot_keys_prime = DeviceVectorUint32(self.block_count)
-        self._sync_slot_block_keys_to_block_slot_keys()
+        self.CAMIP.sort_int32_by_int32_key(self.block_link_data.v['block_key'],
+                                           self.block_link_data.v['net_key'])
+        self.block_link_data.add('cost', dtype=np.float32)
+        self.block_link_data.add('cost_prime', dtype=np.float32)
 
-        self.p_x = DeviceVectorInt32(self.block_count)
-        self.p_y = DeviceVectorInt32(self.block_count)
-        self.p_x_prime = DeviceVectorInt32(self.block_count)
-        self.p_y_prime = DeviceVectorInt32(self.block_count)
+        self.net_data = DeviceDataFrame({'r_inv': np.empty(self.net_count,
+                                                           dtype=np.float32)},
+                                        allocator=allocator)
 
-        self.X = DeviceSparseMatrix(
-            self.connections.sink_key,
-            self.connections.net_key)
+        # Add temporary columns to net connections/links data-frame table to
+        # compute the number of blocks connected to each net.
+        self.net_link_data.add('ones', np.ones(self.net_link_data.size,
+                                               dtype=np.int32))
+        self.net_link_data.add('reduced_block_count', dtype=np.int32)
 
-        self._e_x = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
-        self._e_x2 = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
-        self._e_y = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
-        self._e_y2 = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
-        self._e_c = dv.from_array(np.zeros(self.X.col.size, dtype=np.float32))
+        self.CAMIP.sum_int32_by_int32_key(self.net_link_data.v['net_key'],
+                                          self.net_link_data.v['ones'],
+                                          self.net_link_data.v['reduced_keys'],
+                                          self.net_link_data.v['reduced_block_count'])
 
-        self.omega = DeviceSparseMatrix(
-            self.connections.sink_key,
-            self.connections.net_key)
-        self.omega_prime = DeviceSparseMatrix(
-            self.connections.sink_key,
-            self.connections.net_key,
-            np.ones(len(self.connections), dtype=np.float32))
-        self._block_keys = DeviceVectorInt32(len(self.connections))
-
-        d_sort_netlist_keys(self.X.col, self.X.row)
-        d_sort_netlist_keys(self.omega.row, self.omega.col)
-
-        self.omega_prime.row[:] = self.omega.row[:]
-        self.omega_prime.col[:] = self.omega.col[:]
-
-        self.r_inv = dv.from_array(np.ones(self.net_count, dtype=np.float32))
-        self.non_global_net_count = d_sum_float_by_key(self.X.col,
-                                                       self.omega_prime.data,
-                                                       self._block_keys,
-                                                       self.omega_prime.data)
-        r_inv = self.r_inv[:]
-        r_inv[self._block_keys[:self.non_global_net_count]] = np.reciprocal(
-            self.omega_prime.data[:self.non_global_net_count])
-        self.r_inv[:] = r_inv
-        self.block_group_keys = DeviceVectorInt32(self.block_count)
-        self.block_group_keys_sorted = DeviceVectorInt32(self.block_count)
-        self._group_block_keys = DeviceVectorInt32(self.block_group_keys.size)
-        self._delta_s = dv.from_array(np.zeros(self.block_count,
-                                               dtype=np.float32))
-        self._n_c = dv.from_array(np.zeros(len(self.connections),
-                                           dtype=np.float32))
-        self.delta_n = dv.from_array(np.zeros(len(self.connections),
-                                              dtype=np.float32))
-        self._packed_block_group_keys = DeviceVectorInt32(self
-                                                          ._group_block_keys
-                                                          .size)
-        self._rejected_block_keys = DeviceVectorInt32(self.block_group_keys
-                                                      .size)
-        self.omega_prime.data[:] = 0
+        self.net_data.v['r_inv'][:] = np.reciprocal(self.net_link_data
+                                                    ['reduced_block_count']
+                                                    [:self.net_count]
+                                                    .astype(np.float32))
+        # Drop the temporary columns from the data frame, since we don't need
+        # them any more.
+        self.net_link_data.drop('reduced_block_count')
+        self.net_link_data.drop('ones')
+        import pudb; pudb.set_trace()
 
     def get_net_elements(self):
         return pd.DataFrame(dict([(k, getattr(self, '_e_%s' %
@@ -353,41 +487,6 @@ class CAMIP(object):
 
     def update_state(self, maximum_move_distance):
         pass
-
-    def shuffle_placement(self):
-        '''
-        Shuffle placement permutation.
-
-        The shuffle is aware of IO and logic slots in the placement, and will
-        keep IO and logic within the corresponding areas of the permutation.
-        '''
-        slot_block_keys = self.slot_block_keys[:]
-        np.random.shuffle(slot_block_keys[:self.s2p.io_slot_count])
-        np.random.shuffle(slot_block_keys[self.s2p.io_slot_count:])
-        self.slot_block_keys[:] = slot_block_keys[:]
-        self._sync_slot_block_keys_to_block_slot_keys()
-
-    def _sync_block_slot_keys_to_slot_block_keys(self):
-        '''
-        Update `slot_block_keys` based on `block_slot_keys`.
-
-        Useful when updating the permutation slot contents directly _(e.g.,
-        shuffling the contents of the permutation slots)_.
-        '''
-        slot_block_keys = self.slot_block_keys[:]
-        slot_block_keys[:] = self.block_count
-        slot_block_keys[self.block_slot_keys[:]] = xrange(self.block_count)
-        self.slot_block_keys[:] = slot_block_keys[:]
-
-    def _sync_slot_block_keys_to_block_slot_keys(self):
-        '''
-        Update `block_slot_keys` based on `slot_block_keys`.
-        '''
-        occupied = np.where(self.slot_block_keys[:] < self.block_count)
-        block_slot_keys = self.block_slot_keys[:]
-        slot_block_keys = self.slot_block_keys[:]
-        block_slot_keys[slot_block_keys[occupied]] = occupied[0]
-        self.block_slot_keys[:] = block_slot_keys[:]
 
     @profile
     def evaluate_placement(self):
@@ -623,19 +722,6 @@ class CAMIP(object):
         self.apply_groups(rejected_moves)
         self.evaluate_placement()
         return moved_count, rejected_moves
-
-    def finalize(self):
-        # Copy the final position of each block to the slot-to-block-key
-        # mapping.
-        self._sync_block_slot_keys_to_slot_block_keys()
-
-        # To make output compatible with VPR, we must pack blocks in IO tiles
-        # to fill IO tile-slots contiguously.
-        io_slot_block_keys = self.slot_block_keys[:self.s2p.io_slot_count]
-        pack_io(io_slot_block_keys, self.io_capacity)
-        self.slot_block_keys[:self.s2p.io_slot_count] = \
-            io_slot_block_keys[:]
-        self._sync_slot_block_keys_to_block_slot_keys()
 
     def get_state(self):
         return {}
