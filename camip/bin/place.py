@@ -6,21 +6,24 @@ from path_helpers import path
 from table_layouts import (get_PLACEMENT_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_TABLE_LAYOUT,
                            get_PLACEMENT_STATS_DATAFRAME_LAYOUT)
-from camip import CAMIP, VPRSchedule, Placement
+from camip import CAMIP, VPRSchedule, Placement, partition_keys
 from camip.timing import CAMIPTiming
 from camip.device.CAMIP import extract_positions
 import numpy as np
 import tables as ts
 import pandas as pd
 from cyplace_experiments.data.connections_table import (ConnectionsTable,
-                                                        get_connections_frame)
+                                                        get_connections_frame,
+                                                        populate_connection_frame,
+                                                        CONNECTION_CLOCK,
+                                                        CONNECTION_CLOCK_DRIVER)
 
 
 def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
-          timing=False, critical_path_only=False, wire_length_factor=0.5,
-          criticality_exp=10.):
-    connections_table = ConnectionsTable.from_net_list_name(net_file_namebase)
-    import pudb; pudb.set_trace()
+          include_clock=False, timing=False, critical_path_only=False,
+          wire_length_factor=0.5, criticality_exp=10.):
+    connections = populate_connection_frame(
+        get_connections_frame(net_file_namebase))
     if timing or critical_path_only:
         if timing:
             critical_path_only = False
@@ -29,10 +32,18 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
                              wire_length_factor=wire_length_factor,
                              criticality_exp=criticality_exp)
     else:
-        connections = get_connections_frame(net_file_namebase)
+        if include_clock:
+            place_connections = connections
+        else:
+            connections['original_block_key'] = connections['block_key']
+            connections['exclude'] = connections.type.isin(
+                [CONNECTION_CLOCK, CONNECTION_CLOCK_DRIVER])
+            place_connections = partition_keys(connections, drop_exclude=True)
+        # __NB__ We must create `Placement` _after_ calling `partition_keys`,
+        # since it will likely reassign the block keys.
         placement = Placement(connections, io_capacity)
-        placer = CAMIP(connections, placement)
-    placer.shuffle_placement()
+        placement.shuffle()
+        placer = CAMIP(place_connections, placement)
     print placer.evaluate_placement()
     schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer)
     print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature
@@ -44,7 +55,9 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
         np.array([], dtype=get_PLACEMENT_STATS_DATAFRAME_LAYOUT()))
     place_stats = stats_layout.append(states)
 
-    return placer, place_stats
+    placement.block_data.v['slot_key'][:placer.block_count] =\
+        placer.block_data['slot_key'][:]
+    return placer, place_stats, placement, connections
 
 
 def save_placement(net_file_namebase, block_positions, place_stats,
@@ -176,18 +189,17 @@ if __name__ == '__main__':
     print args
 
     np.random.seed(args.seed)
-    placer, place_stats = place(args.net_file_namebase, args.seed,
-                                args.io_capacity, args.inner_num,
-                                args.timing, args.critical_path,
-                                args.wire_length_factor, args.criticality_exp)
+    placer, place_stats, placement, connections = \
+        place(args.net_file_namebase, args.seed, args.io_capacity,
+              args.inner_num, args.include_clock, args.timing,
+              args.critical_path, args.wire_length_factor,
+              args.criticality_exp)
 
-    extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
-                      placer.s2p)
-    p_z = np.zeros(placer.p_x.size, dtype=np.uint32)
-    p_z[:placer.s2p.io_count] = (placer.block_slot_keys[:placer.s2p.io_count] %
-                                 placer.io_capacity)
-    block_positions = np.array([placer.p_x[:], placer.p_y[:], p_z],
-                               dtype='uint32').T
+    block_positions = placement.block_positions()[:].values.astype(np.uint32)
+    block_mapping = (connections[['block_key', 'original_block_key',
+                                 'block_label']].drop_duplicates('block_key')
+                     .sort('original_block_key'))
+    block_positions = block_positions[block_mapping['block_key']]
     if args.output_path is None and args.timing:
         args.output_path = ('placed-%(net_file_namebase)s-s%(seed)s-%(block_positions_sha1)s' +
                             '-e%.2f-w%.2f-I%d.h5' % (args.criticality_exp,

@@ -110,8 +110,8 @@ class VPRSchedule(object):
             placer.evaluate_moves()
             non_zero_moves, rejected = placer.assess_groups(1000000)
             total_moves += non_zero_moves
-            deltas = np.abs(placer.omega_prime.data[:block_count] -
-                            placer._n_c[:block_count])
+            deltas = np.abs(placer.block_link_data['cost_prime'][:block_count]
+                            - placer.block_link_data['cost'][:block_count])
             deltas_sum += deltas.sum()
             deltas_squared_sum += (deltas * deltas).sum()
         deltas_stddev = get_std_dev(total_moves, deltas_squared_sum, deltas_sum
@@ -165,7 +165,6 @@ class VPRSchedule(object):
             print '|' + '|'.join(['{0:>{1}s}'.format(si_format(v, 2),
                                                      len(k) + 2)
                                   for k, v in state.items()[2:]]) + '|'
-        placer.finalize()
         print '\nRuntime: %.2fs' % (states[-1]['end'] - states[0]['start'])
         return states
 
@@ -227,7 +226,7 @@ class Placement(object):
                                           allocator=allocator)
         self.block_data.add('block_key',
                             self._block_data.index.values.astype(np.int32))
-        self.block_data.add('slot_key', dtype=np.int32)
+        self.block_data.add('slot_key', dtype=np.uint32)
 
         type_counts = self._block_data.groupby('block_type').apply(lambda x:
                                                                    len(x))
@@ -262,6 +261,25 @@ class Placement(object):
         self.slot_data.v['block_key'][:] = slot_block_keys
         self._sync_slot_block_keys_to_block_slot_keys()
 
+    def block_positions(self, allocator=dv):
+        # Pack IO in each tile to lowest Z-indices.
+        self._pack_io()
+        position_data = DeviceDataFrame({'p_x': np.zeros(self.block_count,
+                                                         dtype=np.int32)},
+                                        allocator=allocator)
+        position_data.add('p_y', dtype=np.int32)
+        position_data.add('p_z', np.zeros(self.block_count, dtype=np.int32))
+        b = position_data
+        _CAMIP.extract_positions(self.block_data.v['slot_key'], b.v['p_x'],
+                                 b.v['p_y'], self.s2p)
+        b.v['p_z'][:self.io_count] = (self.block_data['slot_key']
+                                      [:self.io_count] % self.io_capacity)
+        return position_data
+
+    @property
+    def io_capacity(self):
+        return self.s2p.io_capacity
+
     @property
     def io_slot_count(self):
         return self.s2p.io_slot_count
@@ -278,7 +296,7 @@ class Placement(object):
     def logic_count(self):
         return self.s2p.logic_count
 
-    def shuffle_placement(self):
+    def shuffle(self):
         '''
         Shuffle placement permutation.
 
@@ -316,6 +334,10 @@ class Placement(object):
 
     @property
     def slot_block_keys(self):
+        self._pack_io()
+        return self.slot_data.v['block_key']
+
+    def _pack_io(self):
         # Copy the final position of each block to the slot-to-block-key
         # mapping.
         self._sync_block_slot_keys_to_slot_block_keys()
@@ -327,11 +349,67 @@ class Placement(object):
                 self.s2p.io_capacity)
         self.slot_data.v['block_key'][:] = slot_block_keys[:]
         self._sync_slot_block_keys_to_block_slot_keys()
-        return self.slot_data.v['block_key']
+
+
+def partition_keys(connections, mask=None, drop_exclude=False):
+    # # `partition_keys` #
+    #
+    # Partition keys and reassign net and block keys such that the ranges keys
+    # for the first partition are contiguous.
+    #
+    #        0                                 partition size
+    #        |                                        |
+    #        ╔════════════════════════════════════════╗┌──────────────────┐
+    #        ║ `mask=True`                            ║│ `mask=False`     │
+    #        ╚════════════════════════════════════════╝└──────────────────┘
+    if mask is not None:
+        connections['exclude'] = ~mask
+    elif 'exclude' not in connections:
+        raise KeyError('If `mask` is not specified, `exclude` must exist.')
+    key_connections = connections.sort(['exclude', 'net_key'])
+    key_connections.drop_duplicates('net_key', inplace=True)
+    key_connections['new_net_key'] = np.arange(
+        key_connections['net_key'].shape[0],
+        dtype=key_connections['net_key'].dtype)
+    key_connections.set_index('net_key', inplace=True)
+    connections.loc[:, 'net_key'] = (key_connections.loc
+                                     [connections['net_key'].values]
+                                     ['new_net_key'].values.ravel())
+    key_connections = connections.sort(['exclude', 'block_key'])
+    key_connections.drop_duplicates('block_key', inplace=True)
+    key_connections['new_block_key'] = np.arange(
+        key_connections['block_key'].shape[0],
+        dtype=key_connections['block_key'].dtype)
+    key_connections.set_index('block_key', inplace=True)
+    connections.loc[:, 'block_key'] = (key_connections.loc
+                                       [connections['block_key'].values]
+                                       ['new_block_key'].values.ravel())
+    if drop_exclude:
+        return connections.loc[~connections['exclude']]
+    else:
+        return connections.sort('exclude')
 
 
 class CAMIP(object):
     def __init__(self, connections, placement, allocator=dv):
+        '''
+        Arguments:
+
+          - `connections`:
+           * A `pandas.DataFrame` object, with the following columns:
+
+                | net key | block key |
+                |---------|-----------|
+                |    n    |     b     |
+
+           * __NB__ The net keys and block keys must be contiguous ranges
+             starting at zero.  This is necessary because we do
+             scattering/gathering based on unique keys in the table.
+           * Use `partition_keys` if you'd like to exclude some connections,
+             e.g., clock connections, that might break the contiguous key
+             ranges.
+          - `placement`: `Placement` instance.
+        '''
         # __NB__ The code now allows for _any_ connections to be filtered out.
         # Only blocks and nets referenced by the selected connections will
         # affect _wire-length_ optimization.
@@ -351,11 +429,15 @@ class CAMIP(object):
         #else:
             #mask = ~connections_table.connections.type.isin([CONNECTION_CLOCK,
                                                              #CONNECTION_CLOCK_DRIVER])
-        block_keys = connections.block_key.unique()
+        block_keys = np.sort(connections.block_key.unique())
+        self.s2p = placement.s2p
         self.CAMIP = _CAMIP
         self.block_count = block_keys.size
         self.net_count = connections.net_key.unique().size
 
+        # Declare device vector frame only for block keys that are listed in
+        # the provided `connections`.
+        # __NB__ This may be a subset of the blocks in the placement.
         self.block_data = DeviceDataFrame({'block_key':
                                            block_keys.astype(np.uint32),
                                            'slot_key':
@@ -379,6 +461,7 @@ class CAMIP(object):
                                                     dtype=np.int32)},
                                           allocator=allocator)
         self.group_data.add('delta_cost', dtype=np.float32)
+
         self.net_link_data = DeviceDataFrame(
             OrderedDict([('net_key', connections.net_key.values
                           .astype(np.int32)),
@@ -405,6 +488,9 @@ class CAMIP(object):
         self.block_link_data.add('cost', dtype=np.float32)
         self.block_link_data.add('cost_prime', dtype=np.float32)
 
+        # Declare device frame only for net keys that are listed in the
+        # provided `connections`.
+        # __NB__ This may be a subset of the nets in the placement.
         self.net_data = DeviceDataFrame({'r_inv': np.empty(self.net_count,
                                                            dtype=np.float32)},
                                         allocator=allocator)
@@ -428,7 +514,6 @@ class CAMIP(object):
         # them any more.
         self.net_link_data.drop('reduced_block_count')
         self.net_link_data.drop('ones')
-        import pudb; pudb.set_trace()
 
     def get_net_elements(self):
         return pd.DataFrame(dict([(k, getattr(self, '_e_%s' %
@@ -499,24 +584,34 @@ class CAMIP(object):
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments.
         # Thrust `transform`.
-        d_extract_positions(self.block_slot_keys, self.p_x, self.p_y, self.s2p)
+        b = self.block_data
+        nc = self.net_link_data
+        n = self.net_data
+        bc = self.block_link_data
+
+        self.CAMIP.extract_positions(b.v['slot_key'], b.v['p_x'], b.v['p_y'],
+                                     self.s2p)
 
         # Star+ vectors
         # Thrust `reduce_by_key`.
-        d_sum_xy_vectors(self.X.row, self.X.col, self.p_x, self.p_y, self._e_x,
-                         self._e_x2, self._e_y, self._e_y2, self._block_keys)
+        self.CAMIP.sum_xy_vectors(nc.v['block_key'], nc.v['net_key'],
+                                  b.v['p_x'], b.v['p_y'], nc.v['x'],
+                                  nc.v['x2'], nc.v['y'], nc.v['y2'],
+                                  nc.v['reduced_keys'])
 
         # `theta`: $\theta =$ total placement cost
         # Thrust `transform`.
-        self.theta = d_star_plus_2d(self._e_x, self._e_x2, self._e_y,
-                                    self._e_y2, self.r_inv, 1.59, self._e_c)
+        self.theta = self.CAMIP.star_plus_2d(nc.v['x'], nc.v['x2'], nc.v['y'],
+                                             nc.v['y2'], n.v['r_inv'], 1.59,
+                                             nc.v['cost'])
 
         # $\vec{n_c}$ contains the total cost of all edges connected to node
         # $i$.
         # Thrust `reduce_by_key`.
-        N = d_sum_permuted_float_by_key(self.omega.row, self._e_c,
-                                        self.omega.col, self._block_keys,
-                                        self._n_c, self.omega.col.size)
+        self.CAMIP.sum_permuted_float_by_key(bc.v['block_key'], nc.v['cost'],
+                                             bc.v['net_key'],
+                                             nc.v['reduced_keys'],
+                                             bc.v['cost'], bc.size)
         return self.theta
 
     @profile
@@ -547,13 +642,15 @@ class CAMIP(object):
                                                max_logic_move=max_logic_move)
 
         # Thrust `transform`.
-        d_slot_moves(self.block_slot_keys, self.block_slot_keys_prime,
-                     self.move_pattern)
+        self.CAMIP.slot_moves(self.block_data.v['slot_key'],
+                              self.block_data.v['slot_key_prime'],
+                              self.move_pattern)
 
         # Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on
         # permutation slot assignments, using Thrust `transform`.
-        d_extract_positions(self.block_slot_keys_prime, self.p_x_prime,
-                            self.p_y_prime, self.s2p)
+        self.CAMIP.extract_positions(self.block_data.v['slot_key_prime'],
+                                     self.block_data.v['p_x_prime'],
+                                     self.block_data.v['p_y_prime'], self.s2p)
 
     @profile
     def evaluate_moves(self):
@@ -579,24 +676,20 @@ class CAMIP(object):
         [4]: http://www.sciencedirect.com/science/article/pii/B9780124159938000049
         '''
         # Thrust `reduce_by_key` over a `transform` iterator.
-        evaled_block_count = d_evaluate_moves(self.omega_prime.row,
-                                              self.omega_prime.col, self.p_x,
-                                              self.p_x_prime, self._e_x,
-                                              self._e_x2, self.p_y,
-                                              self.p_y_prime, self._e_y,
-                                              self._e_y2, self.r_inv, 1.59,
-                                              self._block_keys,
-                                              self.omega_prime.data)
+        bc = self.block_link_data
+        b = self.block_data
+        nc = self.net_link_data
+        n = self.net_data
+        self.CAMIP.evaluate_moves(bc.v['block_key'], bc.v['net_key'],
+                                  b.v['p_x'], b.v['p_x_prime'], nc.v['x'],
+                                  nc.v['x2'], b.v['p_y'], b.v['p_y_prime'],
+                                  nc.v['y'], nc.v['y2'], n.v['r_inv'], 1.59,
+                                  nc.v['reduced_keys'], bc.v['cost_prime'])
 
         # Compute move-deltas using a Thrust `reduce_by_key` call over a
         # `transform` iterator.
-        #d_minus_float(self.omega_prime.data, self._n_c, self.delta_n)
-        delta_n = np.zeros(self.delta_n.size, dtype=self.delta_n.dtype)
-        delta_n[self._block_keys[:evaled_block_count]] = (
-            self.omega_prime.data[:evaled_block_count] -
-            self._n_c[:evaled_block_count])
-        self.delta_n[:] = delta_n
-        #d_minus_float(self.omega_prime.data, self._n_c, self.delta_n)
+        self.CAMIP.minus_float(bc.v['cost_prime'], bc.v['cost'],
+                               b.v['delta_cost'])
 
     @profile
     def assess_groups(self, temperature):
@@ -633,15 +726,18 @@ class CAMIP(object):
         [8]: http://thrust.github.io/doc/group__stream__compaction.html#ga36d9d6ed8e17b442c1fd8dc40bd515d5
         [9]: http://www.sciencedirect.com/science/article/pii/B9780124159938000062#s0065
         '''
+        b = self.block_data
+        g = self.group_data
+
         # Thrust `transform`.
-        d_compute_block_group_keys(self.block_slot_keys,
-                                   self.block_slot_keys_prime,
-                                   self.block_group_keys,
-                                   self.s2p.total_slot_count)
+        self.CAMIP.compute_block_group_keys(b.v['slot_key'],
+                                            b.v['slot_key_prime'],
+                                            b.v['group_key'],
+                                            self.s2p.total_slot_count)
 
         # Thrust `reduce`.
-        unmoved_count = d_equal_count_uint32(self.block_slot_keys,
-                                             self.block_slot_keys_prime)
+        unmoved_count = self.CAMIP.equal_count_uint32(b.v['slot_key'],
+                                                      b.v['slot_key_prime'])
 
         # ## Packed block group keys ##
         #
@@ -651,38 +747,37 @@ class CAMIP(object):
         # the list of blocks belonging to groups of associated moves,
 
         # Thrust `sequence`.
-        d_sequence_int32(self._group_block_keys)
+        self.CAMIP.sequence_int32(g.v['block_key'])
 
         # Thrust `sort_by_key`. _(use `self._delta_s` as temporary, since it is
         # an array of the correct size)_.
-        d_copy_int32(self.block_group_keys, self.block_group_keys_sorted)
-        d_sort_netlist_keys(self.block_group_keys_sorted,
-                            self._group_block_keys)
+        self.CAMIP.copy_int32(b.v['group_key'], b.v['sorted_group_key'])
+        self.CAMIP.sort_int32_by_int32_key(b.v['sorted_group_key'],
+                                           g.v['block_key'])
 
-        if unmoved_count >= self._group_block_keys.size:
-            return 0, self._group_block_keys.size
+        if unmoved_count >= g.size:
+            return 0, g.size
 
         # Thrust `inclusive_scan`.
-        output_size = self._group_block_keys.size - unmoved_count
-        d_permuted_nonmatch_inclusive_scan_int32(self.block_group_keys,
-                                                 self._group_block_keys,
-                                                 self._packed_block_group_keys,
-                                                 output_size)
+        output_size = g.size - unmoved_count
+        self.CAMIP.permuted_nonmatch_inclusive_scan_int32(
+            b.v['group_key'], g.v['block_key'], b.v['packed_group_key'],
+            output_size)
 
         # Thrust `reduce_by_key` over a `permutation` iterator.
-        N = d_sum_permuted_float_by_key(self._packed_block_group_keys,
-                                        self.delta_n, self._group_block_keys,
-                                        self._block_keys, self._delta_s,
-                                        output_size)
+        N = self.CAMIP.sum_permuted_float_by_key(
+            b.v['packed_group_key'], b.v['delta_cost'], g.v['block_key'],
+            self.net_link_data.v['reduced_keys'], g.v['delta_cost'],
+            output_size)
 
         # Thrust `copy_if`.
-        N = d_assess_groups(temperature, self._group_block_keys,
-                            self._packed_block_group_keys, self._delta_s,
-                            self._rejected_block_keys, output_size)
+        N = self.CAMIP.assess_groups(temperature, g.v['block_key'],
+                                     b.v['packed_group_key'],
+                                     g.v['delta_cost'],
+                                     b.v['rejected_block_key'], output_size)
 
         #      (moves evaluated)                , (moves rejected)
-        return (self.block_slot_keys.size - unmoved_count), N
-
+        return (b.size - unmoved_count), N
 
     @profile
     def apply_groups(self, rejected_move_block_count):
@@ -703,14 +798,14 @@ class CAMIP(object):
         if rejected_move_block_count == 0:
             return
 
+        b = self.block_data
         # Thrust `transform`.
-        d_copy_permuted_uint32(self.block_slot_keys,
-                               self.block_slot_keys_prime,
-                               self._rejected_block_keys,
-                               rejected_move_block_count)
+        self.CAMIP.copy_permuted_uint32(b.v['slot_key'], b.v['slot_key_prime'],
+                                        b.v['rejected_block_key'],
+                                        rejected_move_block_count)
 
-        self.block_slot_keys, self.block_slot_keys_prime = (
-            self.block_slot_keys_prime, self.block_slot_keys)
+        b.v['slot_key'], b.v['slot_key_prime'] = (b.v['slot_key_prime'],
+                                                  b.v['slot_key'])
 
     @profile
     def run_iteration(self, seed, temperature, max_io_move=None,

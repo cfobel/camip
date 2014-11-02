@@ -6,8 +6,8 @@ from libc.math cimport fmin
 import numpy as np
 cimport numpy as np
 
-from cythrust.device_vector cimport (DeviceVectorInt32, DeviceVectorUint32,
-                                     DeviceVectorFloat32, DeviceVectorInt8,
+from cythrust.device_vector cimport (DeviceVectorViewInt32, DeviceVectorUint32,
+                                     DeviceVectorViewFloat32, DeviceVectorViewInt8,
                                      DeviceVectorViewInt32,
                                      DeviceVectorViewUint32,
                                      DeviceVectorViewFloat32,
@@ -40,14 +40,14 @@ from cythrust.device_vector.sort import sort_int32_by_int32_key
 from cythrust.device_vector.sum import sum_int32_by_int32_key
 
 
-cpdef evaluate_moves(DeviceVectorInt32 row, DeviceVectorInt32 col,
-                     DeviceVectorInt32 p_x, DeviceVectorInt32 p_x_prime,
-                     DeviceVectorFloat32 e_x, DeviceVectorFloat32 e_x_2,
-                     DeviceVectorInt32 p_y, DeviceVectorInt32 p_y_prime,
-                     DeviceVectorFloat32 e_y, DeviceVectorFloat32 e_y_2,
-                     DeviceVectorFloat32 r_inv, float beta,
-                     DeviceVectorInt32 reduced_keys,
-                     DeviceVectorFloat32 reduced_values):
+cpdef evaluate_moves(DeviceVectorViewInt32 row, DeviceVectorViewInt32 col,
+                     DeviceVectorViewInt32 p_x, DeviceVectorViewInt32 p_x_prime,
+                     DeviceVectorViewFloat32 e_x, DeviceVectorViewFloat32 e_x_2,
+                     DeviceVectorViewInt32 p_y, DeviceVectorViewInt32 p_y_prime,
+                     DeviceVectorViewFloat32 e_y, DeviceVectorViewFloat32 e_y_2,
+                     DeviceVectorViewFloat32 r_inv, float beta,
+                     DeviceVectorViewInt32 reduced_keys,
+                     DeviceVectorViewFloat32 reduced_values):
     cdef plus[float] plus2
     cdef unpack_binary_args[plus[float]] *plus2_tuple = \
         new unpack_binary_args[plus[float]](plus2)
@@ -85,8 +85,8 @@ cpdef evaluate_moves(DeviceVectorInt32 row, DeviceVectorInt32 col,
     return reduced_count
 
 
-def minus_float(DeviceVectorFloat32 n_c, DeviceVectorFloat32 n_c_prime,
-                DeviceVectorFloat32 delta_n):
+def minus_float(DeviceVectorViewFloat32 n_c, DeviceVectorViewFloat32 n_c_prime,
+                DeviceVectorViewFloat32 delta_n):
     cdef size_t count = delta_n.size
     cdef minus[float] minus_func
 
@@ -94,7 +94,7 @@ def minus_float(DeviceVectorFloat32 n_c, DeviceVectorFloat32 n_c_prime,
                n_c_prime._vector.begin(), delta_n._vector.begin(), minus_func)
 
 
-cpdef slot_moves(DeviceVectorUint32 slot_keys, DeviceVectorUint32 slot_keys_prime,
+cpdef slot_moves(DeviceVectorViewUint32 slot_keys, DeviceVectorViewUint32 slot_keys_prime,
                  VPRMovePattern move_pattern):
     cdef size_t count = <size_t>slot_keys.size
     cdef plus[uint32_t] plus2_func
@@ -105,8 +105,8 @@ cpdef slot_moves(DeviceVectorUint32 slot_keys, DeviceVectorUint32 slot_keys_prim
                slot_keys_prime._vector.begin(), plus2_func)
 
 
-cpdef extract_positions(DeviceVectorUint32 slot_keys, DeviceVectorInt32 p_x,
-                        DeviceVectorInt32 p_y, VPRAutoSlotKeyTo2dPosition s2p):
+cpdef extract_positions(DeviceVectorViewUint32 slot_keys, DeviceVectorViewInt32 p_x,
+                        DeviceVectorViewInt32 p_y, VPRAutoSlotKeyTo2dPosition s2p):
     r'''
     Extract positions into $\vec{p_x}$ and $\vec{p_x}$ based on permutation
     slot assignments.
@@ -118,7 +118,7 @@ cpdef extract_positions(DeviceVectorUint32 slot_keys, DeviceVectorInt32 p_x,
               deref(s2p._data))
 
 
-def copy_int32(DeviceVectorInt32 a, DeviceVectorInt32 b):
+def copy_int32(DeviceVectorViewInt32 a, DeviceVectorViewInt32 b):
     '''
     Equivalent to:
 
@@ -127,8 +127,8 @@ def copy_int32(DeviceVectorInt32 a, DeviceVectorInt32 b):
     copy(a._vector.begin(), a._vector.end(), b._vector.begin())
 
 
-def copy_permuted_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b,
-                         DeviceVectorInt32 index, size_t index_count):
+def copy_permuted_uint32(DeviceVectorViewUint32 a, DeviceVectorViewUint32 b,
+                         DeviceVectorViewInt32 index, size_t index_count):
     '''
     Equivalent to:
 
@@ -144,11 +144,11 @@ def copy_permuted_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b,
                                             index._vector.begin()))
 
 
-cpdef sum_xy_vectors(DeviceVectorInt32 block_keys, DeviceVectorInt32 net_keys,
-                     DeviceVectorInt32 p_x, DeviceVectorInt32 p_y,
-                     DeviceVectorFloat32 e_x, DeviceVectorFloat32 e_x2,
-                     DeviceVectorFloat32 e_y, DeviceVectorFloat32 e_y2,
-                     DeviceVectorInt32 reduced_keys):
+cpdef sum_xy_vectors(DeviceVectorViewInt32 block_keys, DeviceVectorViewInt32 net_keys,
+                     DeviceVectorViewInt32 p_x, DeviceVectorViewInt32 p_y,
+                     DeviceVectorViewFloat32 e_x, DeviceVectorViewFloat32 e_x2,
+                     DeviceVectorViewFloat32 e_y, DeviceVectorViewFloat32 e_y2,
+                     DeviceVectorViewInt32 reduced_keys):
     cdef size_t count = net_keys.size
     cdef square[float] square_f
     cdef equal_to[int32_t] reduce_compare
@@ -179,10 +179,10 @@ cpdef sum_xy_vectors(DeviceVectorInt32 block_keys, DeviceVectorInt32 net_keys,
         reduce_compare, reduce_plus4)
 
 
-cpdef star_plus_2d(DeviceVectorFloat32 e_x, DeviceVectorFloat32 e_x2,
-                   DeviceVectorFloat32 e_y, DeviceVectorFloat32 e_y2,
-                   DeviceVectorFloat32 r_inv, float beta,
-                   DeviceVectorFloat32 e_c):
+cpdef star_plus_2d(DeviceVectorViewFloat32 e_x, DeviceVectorViewFloat32 e_x2,
+                   DeviceVectorViewFloat32 e_y, DeviceVectorViewFloat32 e_y2,
+                   DeviceVectorViewFloat32 r_inv, float beta,
+                   DeviceVectorViewFloat32 e_c):
     cdef size_t count = r_inv.size
 
     cdef c_star_plus_2d[float] *_star_plus = new c_star_plus_2d[float](beta)
@@ -201,11 +201,11 @@ cpdef star_plus_2d(DeviceVectorFloat32 e_x, DeviceVectorFloat32 e_x2,
     return <float>accumulate(e_c._vector.begin(), e_c._vector.begin() + count)
 
 
-cpdef sum_permuted_float_by_key(DeviceVectorInt32 keys,
-                                DeviceVectorFloat32 elements,
-                                DeviceVectorInt32 index,
-                                DeviceVectorInt32 reduced_keys,
-                                DeviceVectorFloat32 reduced_values,
+cpdef sum_permuted_float_by_key(DeviceVectorViewInt32 keys,
+                                DeviceVectorViewFloat32 elements,
+                                DeviceVectorViewInt32 index,
+                                DeviceVectorViewInt32 reduced_keys,
+                                DeviceVectorViewFloat32 reduced_values,
                                 size_t key_count):
     cdef size_t count = <device_vector[int32_t].iterator>accumulate_by_key(
         keys._vector.begin(), keys._vector.begin() + key_count,
@@ -215,9 +215,9 @@ cpdef sum_permuted_float_by_key(DeviceVectorInt32 keys,
     return count
 
 
-def compute_block_group_keys(DeviceVectorUint32 block_slot_keys,
-                             DeviceVectorUint32 block_slot_keys_prime,
-                             DeviceVectorInt32 block_group_keys,
+def compute_block_group_keys(DeviceVectorViewUint32 block_slot_keys,
+                             DeviceVectorViewUint32 block_slot_keys_prime,
+                             DeviceVectorViewInt32 block_group_keys,
                              int32_t sentinel_key):
     cdef size_t count = block_slot_keys.size
     cdef block_group_key[int32_t] *group_key_func = \
@@ -229,7 +229,7 @@ def compute_block_group_keys(DeviceVectorUint32 block_slot_keys,
     del group_key_func
 
 
-cpdef equal_count_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b):
+cpdef equal_count_uint32(DeviceVectorViewUint32 a, DeviceVectorViewUint32 b):
     '''
     Return the number of index positions for which `a` and `b` are equal.
 
@@ -258,13 +258,13 @@ cpdef equal_count_uint32(DeviceVectorUint32 a, DeviceVectorUint32 b):
     return count
 
 
-cpdef sequence_int32(DeviceVectorInt32 a):
+cpdef sequence_int32(DeviceVectorViewInt32 a):
     sequence(a._vector.begin(), a._vector.begin() + <size_t>a.size)
 
 
-cpdef permuted_nonmatch_inclusive_scan_int32(DeviceVectorInt32 elements,
-                                             DeviceVectorInt32 index,
-                                             DeviceVectorInt32 output,
+cpdef permuted_nonmatch_inclusive_scan_int32(DeviceVectorViewInt32 elements,
+                                             DeviceVectorViewInt32 index,
+                                             DeviceVectorViewInt32 output,
                                              size_t index_count):
     cdef not_equal_to[int32_t] _not_equal_to
     cdef unpack_binary_args[not_equal_to[int32_t]] *unpacked_not_equal_to = \
@@ -298,10 +298,10 @@ cpdef permuted_nonmatch_inclusive_scan_int32(DeviceVectorInt32 elements,
     del unpacked_not_equal_to
 
 
-def assess_groups(float temperature, DeviceVectorInt32 group_block_keys,
-                  DeviceVectorInt32 packed_block_group_keys,
-                  DeviceVectorFloat32 group_delta_costs,
-                  DeviceVectorInt32 output, size_t key_count):
+def assess_groups(float temperature, DeviceVectorViewInt32 group_block_keys,
+                  DeviceVectorViewInt32 packed_block_group_keys,
+                  DeviceVectorViewFloat32 group_delta_costs,
+                  DeviceVectorViewInt32 output, size_t key_count):
     '''
     Given the specified annealing temperature and the delta cost for applying
     each group of associated-moves:
@@ -346,8 +346,8 @@ def assess_groups(float temperature, DeviceVectorInt32 group_block_keys,
     return count
 
 
-cpdef sum_float_by_key(DeviceVectorInt32 keys, DeviceVectorFloat32 values,
-                       DeviceVectorInt32 reduced_keys, DeviceVectorFloat32 reduced_values):
+cpdef sum_float_by_key(DeviceVectorViewInt32 keys, DeviceVectorViewFloat32 values,
+                       DeviceVectorViewInt32 reduced_keys, DeviceVectorViewFloat32 reduced_values):
     cdef size_t count = (<device_vector[int32_t].iterator>accumulate_by_key(
         keys._vector.begin(), keys._vector.begin() + <size_t>keys.size,
         values._vector.begin(), reduced_keys._vector.begin(),
@@ -355,8 +355,8 @@ cpdef sum_float_by_key(DeviceVectorInt32 keys, DeviceVectorFloat32 values,
     return count
 
 
-cpdef permuted_fill_float32(DeviceVectorFloat32 elements,
-                          DeviceVectorInt32 index, float value):
+cpdef permuted_fill_float32(DeviceVectorViewFloat32 elements,
+                          DeviceVectorViewInt32 index, float value):
     cdef size_t count = index.size
 
     fill_n(make_permutation_iterator(elements._vector.begin(),
@@ -364,8 +364,8 @@ cpdef permuted_fill_float32(DeviceVectorFloat32 elements,
            count, value)
 
 
-cpdef permuted_fill_int32(DeviceVectorInt32 elements,
-                          DeviceVectorInt32 index, int32_t value):
+cpdef permuted_fill_int32(DeviceVectorViewInt32 elements,
+                          DeviceVectorViewInt32 index, int32_t value):
     cdef size_t count = index.size
 
     fill_n(make_permutation_iterator(elements._vector.begin(),
@@ -373,7 +373,7 @@ cpdef permuted_fill_int32(DeviceVectorInt32 elements,
            count, value)
 
 
-cpdef permuted_fill_int8(DeviceVectorInt8 elements, DeviceVectorInt32 index,
+cpdef permuted_fill_int8(DeviceVectorViewInt8 elements, DeviceVectorViewInt32 index,
                          int8_t value):
     cdef size_t count = index.size
 
@@ -382,14 +382,14 @@ cpdef permuted_fill_int8(DeviceVectorInt8 elements, DeviceVectorInt32 index,
            count, value)
 
 
-cpdef look_up_delay(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
-                    DeviceVectorInt32 p_x, DeviceVectorInt32 p_y,
-                    DeviceVectorFloat32 delays,
+cpdef look_up_delay(DeviceVectorViewInt32 i_index, DeviceVectorViewInt32 j_index,
+                    DeviceVectorViewInt32 p_x, DeviceVectorViewInt32 p_y,
+                    DeviceVectorViewFloat32 delays,
                     int32_t nrows, int32_t ncols,
-                    DeviceVectorInt8 delay_type,
-                    DeviceVectorInt32 delta_x,
-                    DeviceVectorInt32 delta_y,
-                    DeviceVectorFloat32 delays_ij):
+                    DeviceVectorViewInt8 delay_type,
+                    DeviceVectorViewInt32 delta_x,
+                    DeviceVectorViewInt32 delta_y,
+                    DeviceVectorViewFloat32 delays_ij):
     cdef size_t count = i_index.size
     cdef absolute[int32_t] abs_func
     cdef minus[int32_t] minus_func
@@ -464,12 +464,12 @@ cpdef look_up_delay(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
     del unpacked_delay
 
 
-cpdef arrival_delays(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
-                     DeviceVectorInt8 block_is_sync, DeviceVectorFloat32
-                     arrival_times, DeviceVectorFloat32 delays_ij,
-                     DeviceVectorInt32 reduced_keys,
-                     DeviceVectorFloat32 min_arrival_delays,
-                     DeviceVectorFloat32 max_arrival_delays):
+cpdef arrival_delays(DeviceVectorViewInt32 i_index, DeviceVectorViewInt32 j_index,
+                     DeviceVectorViewInt8 block_is_sync, DeviceVectorViewFloat32
+                     arrival_times, DeviceVectorViewFloat32 delays_ij,
+                     DeviceVectorViewInt32 reduced_keys,
+                     DeviceVectorViewFloat32 min_arrival_delays,
+                     DeviceVectorViewFloat32 max_arrival_delays):
     cdef duplicate[float] duplicate_f
     cdef minmax_tuple[float] minmax_f
     cdef arrival_delay arrival_delay_f
@@ -499,8 +499,8 @@ cpdef arrival_delays(DeviceVectorInt32 i_index, DeviceVectorInt32 j_index,
     return count
 
 
-cpdef sort_delay_matrix(DeviceVectorInt32 keys, DeviceVectorInt32 values,
-                        DeviceVectorInt8 delay_type):
+cpdef sort_delay_matrix(DeviceVectorViewInt32 keys, DeviceVectorViewInt32 values,
+                        DeviceVectorViewInt8 delay_type):
     sort_by_key(keys._vector.begin(), keys._vector.begin() +
                 <size_t>keys.size,
                 make_zip_iterator(
