@@ -15,6 +15,7 @@ import pandas as pd
 from cyplace_experiments.data.connections_table import (ConnectionsTable,
                                                         get_connections_frame,
                                                         populate_connection_frame,
+                                                        LOGIC_BLOCK,
                                                         CONNECTION_CLOCK,
                                                         CONNECTION_CLOCK_DRIVER)
 
@@ -24,26 +25,37 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
           wire_length_factor=0.5, criticality_exp=10.):
     connections = populate_connection_frame(
         get_connections_frame(net_file_namebase))
+    if include_clock:
+        place_connections = connections
+    else:
+        connections['original_block_key'] = connections['block_key']
+        connections['exclude'] = connections.type.isin(
+            [CONNECTION_CLOCK, CONNECTION_CLOCK_DRIVER])
+        place_connections = partition_keys(connections, drop_exclude=True)
+
+    # __NB__ We must create `Placement` _after_ calling `partition_keys`, since
+    # it will likely reassign the block keys.
+    placement = Placement(connections, io_capacity)
+    placement.shuffle()
+
+    import pudb; pudb.set_trace()
     if timing or critical_path_only:
         if timing:
             critical_path_only = False
-        placer = CAMIPTiming(connections_table, io_capacity=io_capacity,
+        sync_logic_block_keys = (
+            connections.loc[(connections.block_type == LOGIC_BLOCK) &
+                            (connections.type ==
+                             CONNECTION_CLOCK)]['block_key'].unique()
+            .astype(np.int32))
+        #placer = CAMIPTiming(place_connections, placement,
+        placer = CAMIPTiming(connections, placement,
+                             sync_logic_block_keys,
                              timing_cost_disabled=critical_path_only,
                              wire_length_factor=wire_length_factor,
                              criticality_exp=criticality_exp)
     else:
-        if include_clock:
-            place_connections = connections
-        else:
-            connections['original_block_key'] = connections['block_key']
-            connections['exclude'] = connections.type.isin(
-                [CONNECTION_CLOCK, CONNECTION_CLOCK_DRIVER])
-            place_connections = partition_keys(connections, drop_exclude=True)
-        # __NB__ We must create `Placement` _after_ calling `partition_keys`,
-        # since it will likely reassign the block keys.
-        placement = Placement(connections, io_capacity)
-        placement.shuffle()
         placer = CAMIP(place_connections, placement)
+
     print placer.evaluate_placement()
     schedule = VPRSchedule(placer.s2p, inner_num, placer.block_count, placer)
     print 'starting temperature: %.2f' % schedule.anneal_schedule.temperature

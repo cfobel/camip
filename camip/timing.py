@@ -31,18 +31,19 @@ except:
 
 
 class CAMIPTiming(CAMIP):
-    def __init__(self, connections_table, io_capacity=3,
+    def __init__(self, connections, placement, sync_logic_block_keys,
                  timing_cost_disabled=False, wire_length_factor=0.5,
                  criticality_exp=10.):
         self.timing_cost_disabled = timing_cost_disabled
         self.wire_length_factor = wire_length_factor
-        super(CAMIPTiming, self).__init__(connections_table, io_capacity)
+        super(CAMIPTiming, self).__init__(connections, placement)
 
         self.arrival_data = PathTimingData(get_arch_data(*self.s2p.extent),
-                                           connections_table,
+                                           connections, sync_logic_block_keys,
                                            source=CONNECTION_DRIVER)
         self.departure_data = PathTimingData(get_arch_data(*self.s2p.extent),
-                                             connections_table,
+                                             connections,
+                                             sync_logic_block_keys,
                                              source=CONNECTION_SINK)
         self.arrival_data.connections.add('cost', dtype=np.float32)
         self.arrival_data.connections.add('cost_prime', dtype=np.float32)
@@ -54,12 +55,6 @@ class CAMIPTiming(CAMIP):
         self.departure_data.connections.add('reduced_target_cost',
                                             dtype=np.float32)
         self.departure_data.connections.add('delay_prime', dtype=np.float32)
-        self.position_views = {'p_x': dv.view_from_vector(self.p_x),
-                               'p_y': dv.view_from_vector(self.p_y),
-                               'p_x_prime':
-                               dv.view_from_vector(self.p_x_prime),
-                               'p_y_prime':
-                               dv.view_from_vector(self.p_y_prime)}
 
         self.final_criticality_exp = criticality_exp
         self.criticality_exp = 1.
@@ -72,7 +67,8 @@ class CAMIPTiming(CAMIP):
                                         self.delta_e_over_delta_r))
         self._arrival_times = None
         self._departure_times = None
-        self.sync_block_keys = self._connections_table.sync_logic_block_keys()
+        self.sync_block_keys = (self.arrival_data.special_blocks
+                                ['sync_logic_block_keys'])
 
     def update_state(self, maximum_move_distance):
         super(CAMIPTiming, self).update_state(maximum_move_distance)
@@ -94,14 +90,12 @@ class CAMIPTiming(CAMIP):
 
     def arrival_times(self):
         result = self.arrival_data.update_position_based_longest_paths(
-            {'p_x': dv.view_from_vector(self.p_x),
-             'p_y': dv.view_from_vector(self.p_y)})
+            self.block_data.v)
         return result
 
     def departure_times(self):
-        result = self.departure_data.update_position_based_longest_paths(
-            {'p_x': dv.view_from_vector(self.p_x),
-             'p_y': dv.view_from_vector(self.p_y)})
+        result = self.arrival_data.update_position_based_longest_paths(
+            self.block_data.v)
         return result
 
     #@profile
@@ -128,18 +122,18 @@ class CAMIPTiming(CAMIP):
         a = self.arrival_data.connections
         d = self.departure_data.connections
         look_up_delay_prime(a.v['source_key'], a.v['target_key'],
-                            a.v['delay_type'], self.position_views['p_x'],
-                            self.position_views['p_y'],
-                            self.position_views['p_x_prime'],
-                            self.position_views['p_y_prime'],
+                            a.v['delay_type'], self.block_data.v['p_x'],
+                            self.block_data.v['p_y'],
+                            self.block_data.v['p_x_prime'],
+                            self.block_data.v['p_y_prime'],
                             arch_data.v['delays'], arch_data.nrows,
                             arch_data.ncols, a.v['delay_prime'])
 
         look_up_delay_prime(d.v['source_key'], d.v['target_key'],
-                            d.v['delay_type'], self.position_views['p_x'],
-                            self.position_views['p_y'],
-                            self.position_views['p_x_prime'],
-                            self.position_views['p_y_prime'],
+                            d.v['delay_type'], self.block_data.v['p_x'],
+                            self.block_data.v['p_y'],
+                            self.block_data.v['p_x_prime'],
+                            self.block_data.v['p_y_prime'],
                             arch_data.v['delays'], arch_data.nrows,
                             arch_data.ncols, d.v['delay_prime'])
 
@@ -196,12 +190,20 @@ class CAMIPTiming(CAMIP):
                 block_arrays.v['arrival_cost'],
                 block_arrays.v['departure_cost'])
 
-        max_wirelength_delta = np.abs(self.delta_n[:]).max()
-        delta_n_view = dv.view_from_vector(self.delta_n)
-        compute_normalized_weighted_sum(self.wire_length_factor, delta_n_view,
+        #max_wirelength_delta = np.abs(self.delta_n[:]).max()
+        #delta_n_view = dv.view_from_vector(self.delta_n)
+        #compute_normalized_weighted_sum(self.wire_length_factor, delta_n_view,
+                                        #max_wirelength_delta,
+                                        #block_arrays.v['arrival_cost'],
+                                        #max_timing_delta, delta_n_view)
+        max_wirelength_delta = np.abs(self.block_data['delta_cost'][:]).max()
+        compute_normalized_weighted_sum(self.wire_length_factor,
+                                        self.block_data.v['delta_cost'],
                                         max_wirelength_delta,
                                         block_arrays.v['arrival_cost'],
-                                        max_timing_delta, delta_n_view)
+                                        max_timing_delta,
+                                        self.block_data.v['delta_cost'])
+        x = 0
 
     def get_state(self):
         return {'critical_path': self.critical_path,
