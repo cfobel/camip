@@ -25,10 +25,10 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
           wire_length_factor=0.5, criticality_exp=10.):
     connections = populate_connection_frame(
         get_connections_frame(net_file_namebase))
+    connections['original_block_key'] = connections['block_key']
     if include_clock:
         place_connections = connections
     else:
-        connections['original_block_key'] = connections['block_key']
         connections['exclude'] = connections.type.isin(
             [CONNECTION_CLOCK, CONNECTION_CLOCK_DRIVER])
         place_connections = partition_keys(connections, drop_exclude=True)
@@ -67,7 +67,7 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
         np.array([], dtype=get_PLACEMENT_STATS_DATAFRAME_LAYOUT()))
     place_stats = stats_layout.append(states)
 
-    placement.block_data.v['slot_key'][:placer.block_count] =\
+    placement.block_data.v['slot_key'][:placer.block_count] = \
         placer.block_data['slot_key'][:]
     return placer, place_stats, placement, connections
 
