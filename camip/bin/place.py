@@ -1,6 +1,9 @@
 # coding: utf-8
 import hashlib
 import sys
+from collections import OrderedDict
+import subprocess
+import pkg_resources
 
 from path_helpers import path
 from table_layouts import (get_PLACEMENT_TABLE_LAYOUT,
@@ -18,6 +21,42 @@ from cyplace_experiments.data.connections_table import (ConnectionsTable,
                                                         LOGIC_BLOCK,
                                                         CONNECTION_CLOCK,
                                                         CONNECTION_CLOCK_DRIVER)
+
+
+def get_version_info():
+    try:
+        version = subprocess.check_output('git describe', shell=True).strip()
+        try:
+            subprocess.check_call('git diff-files --quiet', shell=True)
+            dirty = False
+        except subprocess.CalledProcessError:
+            dirty = True
+        if dirty:
+            version += '*'
+    except:
+        version = pkg_resources.get_distribution('camip').version
+    return version
+
+
+def result_dataframes(params, block_mapping, place_stats):
+    stats_params_df = pd.DataFrame([params.values()], columns=params.keys(),
+                                   index=range(place_stats.shape[0]))
+    stats_params_df['state_index'] = np.arange(stats_params_df.shape[0],
+                                               dtype=int)
+    states_df = stats_params_df.join(place_stats)
+    states_df['evaluated_count'] = 0.
+    states_df['evaluated_count'].values[0] = (states_df
+                                              ['total_iteration_count']
+                                              .values[0])
+    states_df['evaluated_count'].values[1:] = (
+        states_df['total_iteration_count'].values[1:] -
+        states_df['total_iteration_count'].values[:-1])
+    states_df.drop('total_iteration_count', axis=1, inplace=True)
+
+    block_params_df = pd.DataFrame([params.values()], columns=params.keys(),
+                                index=range(block_mapping.shape[0]))
+
+    return states_df, block_params_df.join(block_mapping)
 
 
 def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
@@ -70,99 +109,32 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
 
     placement.block_data.v['slot_key'][:placer.block_count] = \
         placer.block_data['slot_key'][:]
-    return placer, place_stats, placement, connections
+    block_positions = placement.block_positions()[:].values.astype(np.uint32)
+    block_mapping = (connections[['block_key', 'original_block_key',
+                                'block_label']].drop_duplicates('block_key')
+                     .sort('original_block_key'))
+    positions = block_positions[block_mapping['block_key']]
+    block_mapping['x'] = positions[:, 0]
+    block_mapping['y'] = positions[:, 1]
+    block_mapping['z'] = positions[:, 2]
+    placement_sha1 = (hashlib.sha1(block_mapping[['x', 'y', 'z']].values.data)
+                      .hexdigest())
 
-
-def save_placement(net_file_namebase, block_positions, place_stats,
-                   output_path=None, output_dir=None, inner_num=1., seed=0):
-    '''
-    Perform placement and write result to HDF file with the following
-    structure:
-
-        <net-file_namebase _(e.g., `ex5p`, `clma`, etc.)_> (Group)
-            \--> `placements` (Table)
-
-    The intention here is to structure the results such that they can be merged
-    together with the results from other placements.
-    '''
-    # Use a hash of the block-positions to name the HDF file.
-    block_positions_sha1 = hashlib.sha1(block_positions
-                                        .astype('uint32').data).hexdigest()
-
-    filters = ts.Filters(complib='blosc', complevel=6)
-    if output_path is not None:
-        context = dict(net_file_namebase=net_file_namebase, seed=seed,
-                       block_positions_sha1=block_positions_sha1)
-        output_path = str(output_path) % context
-    else:
-        output_file_name = 'placed-%s-s%d-%s.h5' % (net_file_namebase, seed,
-                                                    block_positions_sha1)
-        output_path = output_file_name
-    if output_dir is not None:
-        output_path = str(output_dir.joinpath(output_path))
-
-    parent_dir = path(output_path).parent
-    if parent_dir and not parent_dir.isdir():
-        parent_dir.makedirs_p()
-    print 'writing output to: %s' % output_path
-
-    h5f = ts.openFile(output_path, mode='w', filters=filters)
-
-    net_file_results = h5f.createGroup(h5f.root, net_file_namebase,
-                                       title='Placement results for %s CAMIP '
-                                       'with `inner_num`=%s, wire-length '
-                                       'driven' % (net_file_namebase,
-                                                   inner_num))
-
-    TABLE_LAYOUT = get_PLACEMENT_TABLE_LAYOUT(len(block_positions)),
-    placements = h5f.createTable(
-        net_file_results, 'placements',
-        get_PLACEMENT_TABLE_LAYOUT(len(block_positions)),
-        title='Placements for %s VPR' % net_file_namebase)
-    placements.setAttr('net_file_namebase', net_file_namebase)
-
-    placements.cols.block_positions_sha1.createIndex()
-    row = placements.row
-    row['net_list_name'] = net_file_namebase
-    row['block_positions'] = block_positions
-    row['block_positions_sha1'] = block_positions_sha1
-    row['seed'] = seed
-    # Convert start-date-time to UTC unix timestamp
-    row['start'] = place_stats['start'].iat[0]
-    row['end'] = place_stats['end'].iat[-1]
-    row['inner_num'] = inner_num
-    row.append()
-    placements.flush()
-
-    stats_group = h5f.createGroup(net_file_results, 'placement_stats',
-                                  title='Placement statistics for each '
-                                  'outer-loop iteration of a anneal for %s' %
-                                  net_file_namebase)
-
-    # Prefix `block_positions_sha1` with `P_` to ensure the table-name is
-    # compatible with Python natural-naming.  This is necessary since SHA1
-    # hashes may start with a number, in which case the name would not be a
-    # valid Python attribute name.
-    placement_stats = h5f.createTable(stats_group, 'P_' + block_positions_sha1,
-                                      get_PLACEMENT_STATS_TABLE_LAYOUT(),
-                                      title='Placement statistics for each '
-                                      'outer-loop iteration of a VPR anneal '
-                                      'for %s with which produced the '
-                                      'block-positions with SHA1 hash `%s`'
-                                      % (net_file_namebase,
-                                         block_positions_sha1))
-    placement_stats.setAttr('net_file_namebase', net_file_namebase)
-    placement_stats.setAttr('block_positions_sha1', block_positions_sha1)
-
-    for i, stats in place_stats.iterrows():
-        stats_row = placement_stats.row
-        for field in ('start', 'end', 'temperature', 'cost', 'success_ratio',
-                      'radius_limit', 'total_iteration_count'):
-            stats_row[field] = stats[field]
-        stats_row.append()
-    placement_stats.flush()
-
-    h5f.close()
+    version = get_version_info()
+    params = OrderedDict([('version', version),
+                          ('net_file_namebase', net_file_namebase),
+                          ('io_capacity', io_capacity),
+                          ('inner_num', inner_num),
+                          ('include_clock', include_clock),
+                          ('timing', timing),
+                          ('critical_path_only', critical_path_only),
+                          ('wire_length_factor', wire_length_factor),
+                          ('max_criticality_exp', criticality_exp),
+                          ('seed', seed),
+                          ('placement_sha1', placement_sha1)])
+    states_df, positions_df = result_dataframes(params, block_mapping,
+                                                place_stats)
+    return params, states_df, positions_df
 
 
 def parse_args(argv=None):
@@ -192,8 +164,12 @@ def parse_args(argv=None):
     parser.add_argument('-s', '--seed', default=np.random.randint(100000),
                         type=int)
     parser.add_argument(dest='net_file_namebase')
+    parser.add_argument('-f', '--force-overwrite', action='store_true')
 
     args = parser.parse_args()
+    if args.output_path is not None and (args.output_path.isfile() and
+                                         not args.force_overwrite):
+        parser.error('Output path exists.  Use `-f` to force overwrite.')
     return args
 
 
@@ -202,24 +178,45 @@ if __name__ == '__main__':
     print args
 
     np.random.seed(args.seed)
-    placer, place_stats, placement, connections = \
-        place(args.net_file_namebase, args.seed, args.io_capacity,
-              args.inner_num, args.include_clock, args.timing,
-              args.critical_path, args.wire_length_factor,
-              args.criticality_exp)
+    params, states_df, positions_df = place(args.net_file_namebase, args.seed,
+                                            args.io_capacity, args.inner_num,
+                                            args.include_clock, args.timing,
+                                            args.critical_path,
+                                            args.wire_length_factor,
+                                            args.criticality_exp)
 
-    block_positions = placement.block_positions()[:].values.astype(np.uint32)
-    block_mapping = (connections[['block_key', 'original_block_key',
-                                  'block_label']].drop_duplicates('block_key')
-                     .sort('original_block_key'))
-    block_positions = block_positions[block_mapping['block_key']]
-    if args.output_path is None and args.timing:
-        args.output_path = ('placed-%(net_file_namebase)s-s%(seed)s-%(block_positions_sha1)s' +
-                            '-e%.2f-w%.2f-I%d.h5' % (args.criticality_exp,
-                                                     args.wire_length_factor,
-                                                     args.io_capacity))
-    save_placement(args.net_file_namebase, block_positions, place_stats,
-                   output_path=args.output_path, output_dir=args.output_dir,
-                   inner_num=args.inner_num, seed=args.seed)
-    #if args.draw_enabled:
-        #raw_input()
+    short_params = OrderedDict([('seed', ('s', '%d')),
+                                ('io_capacity', ('I', '%d')),
+                                ('inner_num', ('i', '%.2f')),
+                                ('include_clock', ('C', None)),
+                                ('timing', ('t', None)),
+                                ('critical_path_only', ('c', None)),
+                                ('wire_length_factor', ('w', '%.2f')),
+                                ('max_criticality_exp', ('e', '%.2f'))])
+    if not args.timing:
+        del short_params['timing']
+        del short_params['wire_length_factor']
+        del short_params['max_criticality_exp']
+    if args.timing or not args.critical_path:
+        del short_params['critical_path_only']
+    if not args.include_clock:
+        del short_params['include_clock']
+
+    # Convert parameter to short string representation.
+    extract_param = lambda x, k, v: v[0] + (v[1] % x[k]) if v[1] is not None else v[0]
+
+    if args.output_path is None:
+        params_str = '-'.join([positions_df.iloc[0][k]
+                               for k in ('net_file_namebase',
+                                         'placement_sha1')] +
+                              [extract_param(positions_df.iloc[0], k, v)
+                               for k, v in short_params.items()])
+        args.output_path = 'placed-%s.h5' % params_str
+        if args.output_dir is not None:
+            args.output_path = args.output_dir.joinpath(args.output_path)
+
+    h5f = pd.HDFStore(str(args.output_path), 'w')
+    h5f.put('/states', states_df, format='table', complevel=2, complib='zlib')
+    h5f.put('/positions', positions_df, format='table', complevel=2,
+            complib='zlib')
+    h5f.close()
