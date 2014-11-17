@@ -38,7 +38,6 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
     placement = Placement(connections, io_capacity)
     placement.shuffle()
 
-    import pudb; pudb.set_trace()
     if timing or critical_path_only:
         if timing:
             critical_path_only = False

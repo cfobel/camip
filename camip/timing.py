@@ -94,7 +94,7 @@ class CAMIPTiming(CAMIP):
         return result
 
     def departure_times(self):
-        result = self.arrival_data.update_position_based_longest_paths(
+        result = self.departure_data.update_position_based_longest_paths(
             self.block_data.v)
         return result
 
