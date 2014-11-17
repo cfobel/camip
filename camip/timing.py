@@ -143,8 +143,6 @@ class CAMIPTiming(CAMIP):
                                         'departure_cost':
                                         np.zeros(self._departure_times.size,
                                                  dtype=np.float32)})
-        #block_arrays.v['arrival_cost'][:] = 0
-        #block_arrays.v['departure_cost'][:] = 0
 
         connection_cost(self.criticality_exp, a.v['delay'],
                         self._arrival_times, self._departure_times,

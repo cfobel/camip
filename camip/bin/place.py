@@ -36,6 +36,8 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
     # __NB__ We must create `Placement` _after_ calling `partition_keys`, since
     # it will likely reassign the block keys.
     placement = Placement(connections, io_capacity)
+    print 'seed:', seed
+    np.random.seed(seed)
     placement.shuffle()
 
     if timing or critical_path_only:
@@ -208,7 +210,7 @@ if __name__ == '__main__':
 
     block_positions = placement.block_positions()[:].values.astype(np.uint32)
     block_mapping = (connections[['block_key', 'original_block_key',
-                                 'block_label']].drop_duplicates('block_key')
+                                  'block_label']].drop_duplicates('block_key')
                      .sort('original_block_key'))
     block_positions = block_positions[block_mapping['block_key']]
     if args.output_path is None and args.timing:
