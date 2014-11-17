@@ -494,6 +494,7 @@ class CAMIP(object):
         self.net_data = DeviceDataFrame({'r_inv': np.empty(self.net_count,
                                                            dtype=np.float32)},
                                         allocator=allocator)
+        self.net_data.add('block_count', dtype=np.int32)
 
         # Add temporary columns to net connections/links data-frame table to
         # compute the number of blocks connected to each net.
@@ -506,6 +507,9 @@ class CAMIP(object):
                                           self.net_link_data.v['reduced_keys'],
                                           self.net_link_data.v['reduced_block_count'])
 
+        self.net_data.v['block_count'][:] = (self.net_link_data
+                                             ['reduced_block_count']
+                                             [:self.net_count])
         self.net_data.v['r_inv'][:] = np.reciprocal(self.net_link_data
                                                     ['reduced_block_count']
                                                     [:self.net_count]
