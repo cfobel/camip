@@ -23,6 +23,43 @@ from cyplace_experiments.data.connections_table import (ConnectionsTable,
                                                         CONNECTION_CLOCK_DRIVER)
 
 
+SHORT_PARAMS = OrderedDict([('seed', ('s', '%d')),
+                            ('io_capacity', ('I', '%d')),
+                            ('inner_num', ('i', '%.2f')),
+                            ('include_clock', ('C', None)),
+                            ('timing', ('t', None)),
+                            ('critical_path_only', ('c', None)),
+                            ('wire_length_factor', ('w', '%.2f')),
+                            ('max_criticality_exp', ('e', '%.2f'))])
+
+
+def group_keys(place_df):
+    '''
+    Return list of columns _(in order)_ to group by for
+    '''
+    state_index_pos = place_df.columns.tolist().index('state_index')
+    group_keys = [k for k in place_df.columns[:state_index_pos]] # if k != 'seed']
+    return group_keys
+
+
+def extract_params(group_index, k, group):
+    #states_df['max_state_index'] = states_df.groupby(group_keys)['state_index'].transform('max')
+    params = OrderedDict(zip(group_index.names, k))
+
+    short_params = OrderedDict([(c, f[0] + (f[1] % params[c])
+                                 if f[1] else f[0])
+                                for c, f in SHORT_PARAMS.iteritems()
+                                if c in params and params[c]])
+    return params, short_params
+
+
+def placement_label(params, short_params, sha1=False):
+    param_keys = ['net_file_namebase', ]
+    if sha1:
+        param_keys += ['placement_sha1']
+    return '-'.join([params[k] for k in param_keys] + short_params.values())
+
+
 def get_version_info():
     try:
         version = subprocess.check_output('git describe', shell=True).strip()
@@ -112,7 +149,8 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
     block_positions = placement.block_positions()[:].values.astype(np.uint32)
     block_mapping = (connections[['block_key', 'original_block_key',
                                 'block_label']].drop_duplicates('block_key')
-                     .sort('original_block_key'))
+                     .sort('original_block_key')
+                     .reset_index(drop=True))
     positions = block_positions[block_mapping['block_key']]
     block_mapping['x'] = positions[:, 0]
     block_mapping['y'] = positions[:, 1]
@@ -132,6 +170,10 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
                           ('max_criticality_exp', criticality_exp),
                           ('seed', seed),
                           ('placement_sha1', placement_sha1)])
+    if not timing:
+        # Remove parameters that are not applicable when timing is not enabled.
+        del params['wire_length_factor']
+        del params['max_criticality_exp']
     states_df, positions_df = result_dataframes(params, block_mapping,
                                                 place_stats)
     return params, states_df, positions_df
@@ -185,22 +227,14 @@ if __name__ == '__main__':
                                             args.wire_length_factor,
                                             args.criticality_exp)
 
-    short_params = OrderedDict([('seed', ('s', '%d')),
-                                ('io_capacity', ('I', '%d')),
-                                ('inner_num', ('i', '%.2f')),
-                                ('include_clock', ('C', None)),
-                                ('timing', ('t', None)),
-                                ('critical_path_only', ('c', None)),
-                                ('wire_length_factor', ('w', '%.2f')),
-                                ('max_criticality_exp', ('e', '%.2f'))])
     if not args.timing:
-        del short_params['timing']
-        del short_params['wire_length_factor']
-        del short_params['max_criticality_exp']
+        del SHORT_PARAMS['timing']
+        del SHORT_PARAMS['wire_length_factor']
+        del SHORT_PARAMS['max_criticality_exp']
     if args.timing or not args.critical_path:
-        del short_params['critical_path_only']
+        del SHORT_PARAMS['critical_path_only']
     if not args.include_clock:
-        del short_params['include_clock']
+        del SHORT_PARAMS['include_clock']
 
     # Convert parameter to short string representation.
     extract_param = lambda x, k, v: v[0] + (v[1] % x[k]) if v[1] is not None else v[0]
@@ -210,10 +244,11 @@ if __name__ == '__main__':
                                for k in ('net_file_namebase',
                                          'placement_sha1')] +
                               [extract_param(positions_df.iloc[0], k, v)
-                               for k, v in short_params.items()])
-        args.output_path = 'placed-%s.h5' % params_str
+                               for k, v in SHORT_PARAMS.items()])
+        args.output_path = path('placed-%s.h5' % params_str)
         if args.output_dir is not None:
             args.output_path = args.output_dir.joinpath(args.output_path)
+    args.output_path.parent.makedirs_p()
 
     h5f = pd.HDFStore(str(args.output_path), 'w')
     h5f.put('/states', states_df, format='table', complevel=2, complib='zlib')
