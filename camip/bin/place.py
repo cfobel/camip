@@ -1,6 +1,7 @@
 # coding: utf-8
 import hashlib
 import sys
+from contextlib import closing
 from collections import OrderedDict
 import subprocess
 import pkg_resources
@@ -22,6 +23,8 @@ from cyplace_experiments.data.connections_table import (ConnectionsTable,
                                                         CONNECTION_CLOCK,
                                                         CONNECTION_CLOCK_DRIVER)
 
+
+HDF_DEFAULTS = dict(format='table', complevel=6, complib='zlib')
 
 SHORT_PARAMS = OrderedDict([('seed', ('s', '%d')),
                             ('io_capacity', ('I', '%d')),
@@ -248,10 +251,25 @@ if __name__ == '__main__':
         args.output_path = path('placed-%s.h5' % params_str)
         if args.output_dir is not None:
             args.output_path = args.output_dir.joinpath(args.output_path)
-    args.output_path.parent.makedirs_p()
+    if args.output_path.parent:
+        args.output_path.parent.makedirs_p()
 
-    h5f = pd.HDFStore(str(args.output_path), 'w')
-    h5f.put('/states', states_df, format='table', complevel=2, complib='zlib')
-    h5f.put('/positions', positions_df, format='table', complevel=2,
-            complib='zlib')
-    h5f.close()
+    states_df.to_hdf(str(args.output_path), '/%s/placement/states' %
+                     args.net_file_namebase, data_columns=states_df.columns,
+                     **HDF_DEFAULTS)
+    positions_df.to_hdf(str(args.output_path), '/%s/placement/positions' %
+                        args.net_file_namebase,
+                        data_columns=positions_df.columns, **HDF_DEFAULTS)
+    positions_columns = positions_df.columns
+    try:
+        partition_index = positions_columns.tolist().index('block_key')
+    except:
+        partition_index = (positions_columns.tolist()
+                           .index('original_block_key'))
+    config_attr_columns = positions_columns[:partition_index]
+    configs = (positions_df[config_attr_columns].reset_index(drop=True)
+                .drop_duplicates())
+    configs.to_hdf(str(args.output_path), '/%s/placement/configs' %
+                   args.net_file_namebase, data_columns=configs.columns,
+                   **HDF_DEFAULTS)
+    print 'Wrote output to: %s' % args.output_path
