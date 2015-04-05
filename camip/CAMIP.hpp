@@ -150,13 +150,18 @@ struct VPRAutoSlotKeyTo2dPosition {
       extent.first = static_cast<int>(ceil(sqrt(logic_count)));
       extent.second = extent.first;
 
-      if (io_count > 2 * io_capacity * (extent.first + extent.second)) {
+      int io_lim = ceil(static_cast<float>(io_count) / (4 * io_capacity));
+      if (io_lim > extent.first) {
+        extent.first = io_lim;
+        extent.second = extent.first;
+      }
+      //if (io_count > 2 * io_capacity * (extent.first + extent.second)) {
         /* The size determined based on the number of logic blocks does not
          * provide enough spots for the inputs/outputs along the perimeter.
          * Increase extents of the grid to fit IO. */
-        extent.first = static_cast<int>(ceil(sqrt(io_count + logic_count)));
-        extent.second = extent.first;
-      }
+        //extent.first = static_cast<int>(ceil(sqrt(io_count + logic_count)));
+        //extent.second = extent.first;
+      //}
 
       Pair io_extent;
 
