@@ -1,4 +1,3 @@
-import tables as ts
 from collections import OrderedDict
 
 
@@ -32,4 +31,4 @@ def get_PLACEMENT_STATS_TABLE_LAYOUT():
 def get_PLACEMENT_STATS_DATAFRAME_LAYOUT():
     return [('start', 'double'), ('end', 'double'), ('temperature', 'float'),
             ('cost', 'double'), ('success_ratio', 'float'),
-            ('radius_limit', 'float'), ('total_iteration_count', 'uint32')]
+            ('radius_limit', 'float'), ('evaluated_move_count', 'uint32')]

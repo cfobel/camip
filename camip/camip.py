@@ -138,14 +138,12 @@ class VPRSchedule(object):
 
     def run(self, placer):
         states = []
-        total_move_count = 0
         #while (self.anneal_schedule.temperature > 0.00001 * placer.theta /
                #placer.net_count):
         while (not placer.exit_criteria(self.anneal_schedule.temperature)):
             start = time.time()
-            total_moves, rejected_moves = self.outer_iteration(placer)
+            evaluated_moves, rejected_moves = self.outer_iteration(placer)
             end = time.time()
-            total_move_count += total_moves
             extra_state = placer.get_state()
             state = OrderedDict([('start', start), ('end', end),
                                  ('cost', placer.theta),
@@ -154,7 +152,7 @@ class VPRSchedule(object):
                                  ('success_ratio',
                                   self.anneal_schedule.success_ratio),
                                  ('radius_limit', self.anneal_schedule.rlim),
-                                 ('total_iteration_count', total_move_count)])
+                                 ('evaluated_move_count', evaluated_moves)])
             state.update(extra_state)
             if not states:
                 print '\n| ' + ' | '.join(state.keys()[2:]) + ' |'
