@@ -187,7 +187,7 @@ def parse_args(argv=None):
     parser.add_argument('-w', '--wire-length-factor', type=float, default=0.5,
                         help='When timing is enabled, fraction of emphasis to '
                         'place on wire-length _(vs. timing)_.')
-    parser.add_argument('-I', '--io-capacity', type=int, default=3)
+    parser.add_argument('-I', '--io-capacity', type=int, default=2)
     parser.add_argument('-s', '--seed', default=np.random.randint(100000),
                         type=int)
     parser.add_argument(dest='vpr_net_file', type=path)
