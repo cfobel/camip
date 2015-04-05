@@ -1,9 +1,12 @@
+import sys
+sys.path.insert(0, '.')
+import os
+import pkg_resources
+
 import numpy as np
-from path_helpers import path
 from distutils.core import setup
 from distutils.extension import Extension
 from Cython.Build import cythonize
-import pkg_resources
 
 import version
 
@@ -12,7 +15,7 @@ pyx_files = ['camip/CAMIP.pyx', 'camip/device/CAMIP.pyx']
 ext_modules = [Extension(f[:-4].replace('/', '.'), [f],
                          extra_compile_args=['-O3', '-msse3', '-std=c++0x'],
                          include_dirs=['camip',
-                                       path('~/local/include').expand(),
+                                       os.path.expanduser('~/local/include'),
                                        '/usr/local/cuda-6.5/include',
                                        pkg_resources
                                        .resource_filename('cythrust', ''),
@@ -28,8 +31,10 @@ setup(name='camip',
       keywords='fpga iterative placement',
       author='Christian Fobel',
       author_email='christian@fobel.net',
-      #url='http://github.com/wheeler-microfluidics/microdrop_utility.git',
+      url='http://github.com/cfobel/camip.git',
       license='GPL',
       packages=['camip'],
-      install_requires=['pandas', 'numpy', 'scipy'],
+      install_requires=['pandas', 'numpy', 'scipy', 'path-helpers',
+                        'vpr-netfile-parser', 'numexpr>=2.0.0',
+                        'tables>=3.1.1'],
       ext_modules=cythonize(ext_modules))
