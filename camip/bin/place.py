@@ -1,27 +1,50 @@
 # coding: utf-8
+from collections import OrderedDict
 import hashlib
 import sys
 
 from path_helpers import path
-from table_layouts import (get_PLACEMENT_TABLE_LAYOUT,
-                           get_PLACEMENT_STATS_TABLE_LAYOUT,
-                           get_PLACEMENT_STATS_DATAFRAME_LAYOUT)
+from table_layouts import get_PLACEMENT_STATS_DATAFRAME_LAYOUT
 from camip import CAMIP, VPRSchedule
-from camip.timing import CAMIPTiming
 from camip.device.CAMIP import extract_positions
 import numpy as np
-import tables as ts
 import pandas as pd
-from cyplace_experiments.data.connections_table import ConnectionsTable
+from fpga_netlist.connections_table import (ConnectionsTable,
+                                            CONNECTION_DRIVER,
+                                            CONNECTION_CLOCK_DRIVER,
+                                            CONNECTION_SINK, INPUT_BLOCK,
+                                            OUTPUT_BLOCK)
+from vpr_net_to_df import vpr_net_to_df
 
 
-def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
+def place_from_multi_hdf(net_file_namebase, h5f_netlists_path, *args, **kwargs):
+    connections_table = ConnectionsTable.from_net_list_name(net_file_namebase,
+                                                            h5f_netlists_path)
+    return place(connections_table, *args, **kwargs)
+
+
+def place_from_hdf(h5f_netlist_path, *args, **kwargs):
+    df_netlist = pd.read_hdf(str(h5f_netlist_path), '/connections')
+    connections_table = ConnectionsTable(df_netlist)
+    return place(connections_table, *args, **kwargs)
+
+
+def place_from_vpr_net(vpr_net_path, *args, **kwargs):
+    df_netlist = vpr_net_to_df(vpr_net_path)
+    connections_table = ConnectionsTable(df_netlist)
+    return place(connections_table, *args, **kwargs)
+
+
+def place(connections_table, seed, io_capacity=3, inner_num=1.,
           include_clock=False, timing=False, critical_path_only=False,
           wire_length_factor=0.5, criticality_exp=10.):
-    connections_table = ConnectionsTable.from_net_list_name(net_file_namebase)
+    np.random.seed(seed)
     if timing or critical_path_only:
+        from camip.timing import CAMIPTiming
+
         if timing:
             critical_path_only = False
+
         placer = CAMIPTiming(connections_table, io_capacity=io_capacity,
                              include_clock=include_clock,
                              timing_cost_disabled=critical_path_only,
@@ -42,32 +65,86 @@ def place(net_file_namebase, seed, io_capacity=3, inner_num=1.,
         np.array([], dtype=get_PLACEMENT_STATS_DATAFRAME_LAYOUT()))
     place_stats = stats_layout.append(states)
 
-    return placer, place_stats
+    params = pd.DataFrame(OrderedDict([
+        ('seed', seed),
+        ('inner_num', schedule.inner_num),
+        ('start_temperature', schedule.anneal_schedule.start_temperature),
+        ('start_rlim', schedule.anneal_schedule.start_rlim),
+        ('include_clock', include_clock)]), index=[0])
+
+    if timing:
+        params['wire_length_factor'] = wire_length_factor
+        params['criticality_exp'] = criticality_exp
+
+    return schedule, placer, params, place_stats
 
 
-def save_placement(net_file_namebase, block_positions, place_stats,
-                   output_path=None, output_dir=None, inner_num=1., seed=0):
-    '''
-    Perform placement and write result to HDF file with the following
-    structure:
+def placer_to_block_positions_df(placer):
+    # Extract block labels from connections data frame.
+    df_block_labels = (placer._connections_table.connections
+                       .loc[placer._connections_table.connections.type
+                            .isin([CONNECTION_SINK, CONNECTION_CLOCK_DRIVER,
+                                   CONNECTION_DRIVER]),
+                            ['driver_key', 'sink_key', 'type', 'driver_type',
+                             'sink_type', 'block_label']].copy())
+    df_block_labels['block_key'] = df_block_labels['driver_key'].values
+    df_block_labels['block_type'] = df_block_labels['driver_type'].values
+    df_block_labels.loc[df_block_labels.type == CONNECTION_SINK,
+                        'block_key'] = df_block_labels['sink_key']
+    df_block_labels.loc[df_block_labels.type == CONNECTION_SINK,
+                        'block_type'] = df_block_labels['sink_type']
+    block_labels = df_block_labels.set_index('block_key')[['block_label', 'block_type']].drop_duplicates().sort_index()
 
-        <net-file_namebase _(e.g., `ex5p`, `clma`, etc.)_> (Group)
-            \--> `placements` (Table)
+    extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
+                      placer.s2p)
+    block_positions = pd.DataFrame(OrderedDict([('x', placer.p_x[:]),
+                                                ('y', placer.p_y[:])]),
+                                   dtype='uint32')
 
-    The intention here is to structure the results such that they can be merged
-    together with the results from other placements.
-    '''
+    # Set `z` position for input and output blocks.
+    block_positions['z'] = np.zeros(placer.p_x.size, dtype=np.uint32)
+    block_positions['type'] = block_labels.block_type.values.astype('uint32')
+    p_z = block_positions.loc[block_positions.type.isin([INPUT_BLOCK,
+                                                         OUTPUT_BLOCK]), 'z']
+    block_positions.loc[block_positions.type.isin([INPUT_BLOCK, OUTPUT_BLOCK]),
+                        'z'] = (placer.block_slot_keys[:][p_z.index] %
+                                placer.io_capacity)
+    block_positions.index = block_labels['block_label']
+    return block_positions
+
+
+def block_positions_df_to_vpr(df_block_positions, extent, net_path, arch_path,
+                              output_path):
+    nx, ny = extent
+    with open(output_path, 'wb') as output:
+        output.write('''\
+Netlist file: {net_path} Architecture file: {arch_path}
+Array size: {nx} x {ny} logic blocks
+
+#block name     x   y   subblk      block number
+#----------     --  --  ------      ------------
+'''.format(net_path=net_path, arch_path=arch_path, nx=nx, ny=ny))
+        df_block_positions.to_string(buf=output, columns=list('xyz'),
+                                     header=False, index_names=False)
+        print >> output, ''
+
+
+def save_placement(net_file_namebase, block_positions, params, place_stats,
+                   output_path=None, output_dir=None):
     # Use a hash of the block-positions to name the HDF file.
-    block_positions_sha1 = hashlib.sha1(block_positions
+    block_positions_sha1 = hashlib.sha1(block_positions[list('xyz')].values
                                         .astype('uint32').data).hexdigest()
+    params_i = params.iloc[0]
 
-    filters = ts.Filters(complib='blosc', complevel=6)
+    hdf_kwargs = dict(format='table', complib='zlib', complevel=6)
     if output_path is not None:
-        context = dict(net_file_namebase=net_file_namebase, seed=seed,
+        context = dict(net_file_namebase=net_file_namebase,
+                       seed=params_i['seed'],
                        block_positions_sha1=block_positions_sha1)
         output_path = str(output_path) % context
     else:
-        output_file_name = 'placed-%s-s%d-%s.h5' % (net_file_namebase, seed,
+        output_file_name = 'placed-%s-s%d-%s.h5' % (net_file_namebase,
+                                                    params_i['seed'],
                                                     block_positions_sha1)
         output_path = output_file_name
     if output_dir is not None:
@@ -78,63 +155,13 @@ def save_placement(net_file_namebase, block_positions, place_stats,
         parent_dir.makedirs_p()
     print 'writing output to: %s' % output_path
 
-    h5f = ts.openFile(output_path, mode='w', filters=filters)
-
-    net_file_results = h5f.createGroup(h5f.root, net_file_namebase,
-                                       title='Placement results for %s CAMIP '
-                                       'with `inner_num`=%s, wire-length '
-                                       'driven' % (net_file_namebase,
-                                                   inner_num))
-
-    TABLE_LAYOUT = get_PLACEMENT_TABLE_LAYOUT(len(block_positions)),
-    placements = h5f.createTable(
-        net_file_results, 'placements',
-        get_PLACEMENT_TABLE_LAYOUT(len(block_positions)),
-        title='Placements for %s VPR' % net_file_namebase)
-    placements.setAttr('net_file_namebase', net_file_namebase)
-
-    placements.cols.block_positions_sha1.createIndex()
-    row = placements.row
-    row['net_list_name'] = net_file_namebase
-    row['block_positions'] = block_positions
-    row['block_positions_sha1'] = block_positions_sha1
-    row['seed'] = seed
-    # Convert start-date-time to UTC unix timestamp
-    row['start'] = place_stats['start'].iat[0]
-    row['end'] = place_stats['end'].iat[-1]
-    row['inner_num'] = inner_num
-    row.append()
-    placements.flush()
-
-    stats_group = h5f.createGroup(net_file_results, 'placement_stats',
-                                  title='Placement statistics for each '
-                                  'outer-loop iteration of a anneal for %s' %
-                                  net_file_namebase)
-
-    # Prefix `block_positions_sha1` with `P_` to ensure the table-name is
-    # compatible with Python natural-naming.  This is necessary since SHA1
-    # hashes may start with a number, in which case the name would not be a
-    # valid Python attribute name.
-    placement_stats = h5f.createTable(stats_group, 'P_' + block_positions_sha1,
-                                      get_PLACEMENT_STATS_TABLE_LAYOUT(),
-                                      title='Placement statistics for each '
-                                      'outer-loop iteration of a VPR anneal '
-                                      'for %s with which produced the '
-                                      'block-positions with SHA1 hash `%s`'
-                                      % (net_file_namebase,
-                                         block_positions_sha1))
-    placement_stats.setAttr('net_file_namebase', net_file_namebase)
-    placement_stats.setAttr('block_positions_sha1', block_positions_sha1)
-
-    for i, stats in place_stats.iterrows():
-        stats_row = placement_stats.row
-        for field in ('start', 'end', 'temperature', 'cost', 'success_ratio',
-                      'radius_limit', 'total_iteration_count'):
-            stats_row[field] = stats[field]
-        stats_row.append()
-    placement_stats.flush()
-
-    h5f.close()
+    params.to_hdf(str(output_path), '/params', data_columns=params.columns,
+                  **hdf_kwargs)
+    block_positions.to_hdf(str(output_path), '/block_positions',
+                           data_columns=block_positions.columns, **hdf_kwargs)
+    place_stats.to_hdf(str(output_path), '/place_stats',
+                       data_columns=place_stats.columns, **hdf_kwargs)
+    return path(output_path)
 
 
 def parse_args(argv=None):
@@ -163,7 +190,8 @@ def parse_args(argv=None):
     parser.add_argument('-I', '--io-capacity', type=int, default=3)
     parser.add_argument('-s', '--seed', default=np.random.randint(100000),
                         type=int)
-    parser.add_argument(dest='net_file_namebase')
+    parser.add_argument(dest='vpr_net_file', type=path)
+    parser.add_argument(dest='vpr_arch_file', type=path)
 
     args = parser.parse_args()
     return args
@@ -173,27 +201,29 @@ if __name__ == '__main__':
     args = parse_args()
     print args
 
-    np.random.seed(args.seed)
-    placer, place_stats = place(args.net_file_namebase, args.seed,
-                                args.io_capacity, args.inner_num,
-                                args.include_clock, args.timing,
-                                args.critical_path, args.wire_length_factor,
-                                args.criticality_exp)
+    schedule, placer, params, place_stats = place_from_vpr_net(
+        args.vpr_net_file, args.seed,
+        io_capacity=args.io_capacity, inner_num=args.inner_num,
+        include_clock=args.include_clock, timing=args.timing,
+        critical_path_only=args.critical_path,
+        wire_length_factor=args.wire_length_factor,
+        criticality_exp=args.criticality_exp)
 
-    extract_positions(placer.block_slot_keys, placer.p_x, placer.p_y,
-                      placer.s2p)
-    p_z = np.zeros(placer.p_x.size, dtype=np.uint32)
-    p_z[:placer.s2p.io_count] = (placer.block_slot_keys[:placer.s2p.io_count] %
-                                 placer.io_capacity)
-    block_positions = np.array([placer.p_x[:], placer.p_y[:], p_z],
-                               dtype='uint32').T
+    block_positions = placer_to_block_positions_df(placer)
+
     if args.output_path is None and args.timing:
         args.output_path = ('placed-%(net_file_namebase)s-s%(seed)s-%(block_positions_sha1)s' +
                             '-e%.2f-w%.2f-I%d.h5' % (args.criticality_exp,
                                                      args.wire_length_factor,
                                                      args.io_capacity))
-    save_placement(args.net_file_namebase, block_positions, place_stats,
-                   output_path=args.output_path, output_dir=args.output_dir,
-                   inner_num=args.inner_num, seed=args.seed)
-    #if args.draw_enabled:
-        #raw_input()
+    hdf_output_path = save_placement(args.vpr_net_file.namebase,
+                                     block_positions, params, place_stats,
+                                     output_path=args.output_path,
+                                     output_dir=args.output_dir)
+
+    vpr_placement_path = ('%s.out' % hdf_output_path.parent
+                          .joinpath(hdf_output_path.namebase))
+    print 'writing VPR placement output to:', vpr_placement_path
+    block_positions_df_to_vpr(block_positions, placer.s2p.extent,
+                              args.vpr_net_file, args.vpr_arch_file,
+                              vpr_placement_path)
