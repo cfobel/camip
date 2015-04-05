@@ -1,27 +1,13 @@
-from collections import Counter
-import time
-
-import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec
 import numpy as np
-import pandas as pd
-from cythrust.device_vector import (DeviceVectorInt8, DeviceVectorFloat32,
-                                    DeviceVectorInt32)
-from cyplace_experiments.data.connections_table import (CONNECTION_DRIVER,
-                                                        CONNECTION_SINK,
-                                                        LOGIC_BLOCK)
-from cyplace_experiments.data import open_netlists_h5f
-from .camip import (CAMIP, DeviceSparseMatrix)
-from cyplace_experiments.data.connections_table import ConnectionsTable
+from fpga_netlist.connections_table import CONNECTION_DRIVER, CONNECTION_SINK
 from thrust_timing.path_timing import PathTimingData, get_arch_data
-from cyplace_experiments.data.connections_table import (CONNECTION_DRIVER,
-                                                        CONNECTION_SINK)
 import cythrust.device_vector as dv
 from thrust_timing.SORT_TIMING import (look_up_delay_prime,
                                        block_delta_timing_cost,
-                                       connection_criticality, connection_cost,
+                                       connection_cost,
                                        compute_normalized_weighted_sum)
 from cythrust import DeviceDataFrame
+from .camip import CAMIP
 
 
 try:

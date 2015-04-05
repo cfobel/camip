@@ -36,12 +36,9 @@ import scipy.sparse as sparse
 from collections import OrderedDict
 
 from cythrust.si_prefix import si_format
-from cyplace_experiments.data import open_netlists_h5f
-from cyplace_experiments.data.connections_table import (INPUT_BLOCK,
-                                                        OUTPUT_BLOCK,
-                                                        LOGIC_BLOCK,
-                                                        CONNECTION_CLOCK,
-                                                        CONNECTION_CLOCK_DRIVER)
+from fpga_netlist.connections_table import (INPUT_BLOCK, OUTPUT_BLOCK,
+                                            LOGIC_BLOCK, CONNECTION_CLOCK,
+                                            CONNECTION_CLOCK_DRIVER)
 from .CAMIP import (VPRAutoSlotKeyTo2dPosition, random_vpr_pattern,
                     cAnnealSchedule, get_std_dev, pack_io,
                     # Only used in class constructors _(not in main methods)_.
@@ -71,8 +68,7 @@ from device.CAMIP import (evaluate_moves as d_evaluate_moves,
                           copy_int32 as d_copy_int32,
                           permuted_fill_float32 as d_permuted_fill_float32,
                           permuted_fill_int32 as d_permuted_fill_int32,
-                          look_up_delay as d_look_up_delay,
-                          )
+                          look_up_delay as d_look_up_delay)
 
 
 try:
