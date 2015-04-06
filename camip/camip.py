@@ -159,7 +159,6 @@ class VPRSchedule(object):
                                                      len(k) + 2)
                                   for k, v in state.items()[2:]]) + '|'
         placer.finalize()
-        print '\nRuntime: %.2fs' % (states[-1]['end'] - states[0]['start'])
         return states
 
 

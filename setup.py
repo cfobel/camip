@@ -36,5 +36,5 @@ setup(name='camip',
       packages=['camip'],
       install_requires=['pandas>=0.16.0', 'numpy>=1.9.2', 'path-helpers>=0.2',
                         'scipy>=0.15.1', 'vpr-netfile-parser>=0.2',
-                        'numexpr>=2.0.0', 'tables>=3.1.1'],
+                        'numexpr>=2.0.0', 'tables>=3.1.1', 'si-prefix>=0.1'],
       ext_modules=cythonize(ext_modules))

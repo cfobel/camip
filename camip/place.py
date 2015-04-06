@@ -1,12 +1,8 @@
 # coding: utf-8
 from collections import OrderedDict
 import hashlib
-import sys
 
 from path_helpers import path
-from table_layouts import get_PLACEMENT_STATS_DATAFRAME_LAYOUT
-from camip import CAMIP, VPRSchedule
-from camip.device.CAMIP import extract_positions
 import numpy as np
 import pandas as pd
 from fpga_netlist.connections_table import (ConnectionsTable,
@@ -14,7 +10,11 @@ from fpga_netlist.connections_table import (ConnectionsTable,
                                             CONNECTION_CLOCK_DRIVER,
                                             CONNECTION_SINK, INPUT_BLOCK,
                                             OUTPUT_BLOCK)
-from vpr_net_to_df import vpr_net_to_df
+from si_prefix import si_format
+from .bin.vpr_net_to_df import vpr_net_to_df
+from .device.CAMIP import extract_positions
+from .table_layouts import get_PLACEMENT_STATS_DATAFRAME_LAYOUT
+from . import CAMIP, VPRSchedule
 
 
 def place_from_multi_hdf(net_file_namebase, h5f_netlists_path, *args, **kwargs):
@@ -76,6 +76,8 @@ def place(connections_table, seed, io_capacity=3, inner_num=1.,
         params['wire_length_factor'] = wire_length_factor
         params['criticality_exp'] = criticality_exp
 
+    print '\nRuntime: %ss' % si_format((place_stats.end -
+                                        place_stats.start).sum())
     return schedule, placer, params, place_stats
 
 
@@ -162,68 +164,3 @@ def save_placement(net_file_namebase, block_positions, params, place_stats,
     place_stats.to_hdf(str(output_path), '/place_stats',
                        data_columns=place_stats.columns, **hdf_kwargs)
     return path(output_path)
-
-
-def parse_args(argv=None):
-    '''Parses arguments, returns (options, args).'''
-    from argparse import ArgumentParser
-
-    if argv is None:
-        argv = sys.argv
-
-    parser = ArgumentParser(description='Run CAMIP place based on net-file'
-                            'namebase.')
-    mutex_group = parser.add_mutually_exclusive_group()
-    mutex_group.add_argument('-o', '--output_path', default=None, type=path)
-    mutex_group.add_argument('-d', '--output_dir', default=None, type=path)
-    parser.add_argument('-e', '--criticality-exp', type=float, default=22.5)
-    parser.add_argument('-i', '--inner-num', type=float, default=1.)
-    parser.add_argument('-C', '--include-clock', action='store_true',
-                        help='Include clock in wire-length optimization.')
-    parser.add_argument('-c', '--critical-path', action='store_true',
-                        help='Enable critical path calculation.')
-    parser.add_argument('-t', '--timing', action='store_true',
-                        help='Optimize using path-based delays.')
-    parser.add_argument('-w', '--wire-length-factor', type=float, default=0.5,
-                        help='When timing is enabled, fraction of emphasis to '
-                        'place on wire-length _(vs. timing)_.')
-    parser.add_argument('-I', '--io-capacity', type=int, default=2)
-    parser.add_argument('-s', '--seed', default=np.random.randint(100000),
-                        type=int)
-    parser.add_argument(dest='vpr_net_file', type=path)
-    parser.add_argument(dest='vpr_arch_file', type=path)
-
-    args = parser.parse_args()
-    return args
-
-
-if __name__ == '__main__':
-    args = parse_args()
-    print args
-
-    schedule, placer, params, place_stats = place_from_vpr_net(
-        args.vpr_net_file, args.seed,
-        io_capacity=args.io_capacity, inner_num=args.inner_num,
-        include_clock=args.include_clock, timing=args.timing,
-        critical_path_only=args.critical_path,
-        wire_length_factor=args.wire_length_factor,
-        criticality_exp=args.criticality_exp)
-
-    block_positions = placer_to_block_positions_df(placer)
-
-    if args.output_path is None and args.timing:
-        args.output_path = ('placed-%(net_file_namebase)s-s%(seed)s-%(block_positions_sha1)s' +
-                            '-e%.2f-w%.2f-I%d.h5' % (args.criticality_exp,
-                                                     args.wire_length_factor,
-                                                     args.io_capacity))
-    hdf_output_path = save_placement(args.vpr_net_file.namebase,
-                                     block_positions, params, place_stats,
-                                     output_path=args.output_path,
-                                     output_dir=args.output_dir)
-
-    vpr_placement_path = ('%s.out' % hdf_output_path.parent
-                          .joinpath(hdf_output_path.namebase))
-    print 'writing VPR placement output to:', vpr_placement_path
-    block_positions_df_to_vpr(block_positions, placer.s2p.extent,
-                              args.vpr_net_file, args.vpr_arch_file,
-                              vpr_placement_path)
