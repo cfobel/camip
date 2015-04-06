@@ -154,7 +154,7 @@ The following is an example placement in [VPR v5 `.out` format][1].  Please see
    * `index` (`string`): Block name from the `.net file.
    * `x` (`uint32`): Block `x` position.
    * `y` (`uint32`): Block `y` position.
-   * `z` (`uint32`): Block `y` position.
+   * `z` (`uint32`): Block `z` position (i.e., subblock).
    * `type` (`uint32`):
      - **0**: Logic block.
      - **1**: Input block.
