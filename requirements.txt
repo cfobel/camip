@@ -1,8 +1,11 @@
+numexpr>=2.0.0
+Cython>=0.21
 pandas>=0.16.0
 numpy>=1.9.2
 path-helpers>=0.2
 scipy>=0.15.1
-vpr-netfile-parser>=0.2
-numexpr>=2.0.0
+vpr-netfile-parser>=0.3
 si-prefix>=0.1
 tables>=3.1.1
+cythrust>=0.9.3
+fpga-netlist>=0.3
