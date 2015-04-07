@@ -117,6 +117,9 @@ HDF5 format and can be browsed using tools such as [`HDFView`][3] or
 be opened, for example, using the Python `pandas` package.  See below for
 details.
 
+Note that example output files for the `.net` file listed above can be found
+[here (`.out`)][.out] and [here (`.h5`)][.h5].
+
 
 ### VPR `.out` placement output ###
 
@@ -185,3 +188,5 @@ end and start time of each iteration.**
 [2]: http://www.hdfgroup.org/HDF5/
 [3]: http://www.hdfgroup.org/products/java/hdfview/
 [4]: http://vitables.org/
+[.out]: https://github.com/cfobel/camip/blob/master/camip/tests/fixtures/placed-13blocks.out
+[.h5]: https://github.com/cfobel/camip/blob/master/camip/tests/fixtures/placed-13blocks.h5
