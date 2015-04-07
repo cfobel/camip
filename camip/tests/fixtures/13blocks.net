@@ -1,0 +1,52 @@
+.global clk
+
+.input block_0
+pinlist: clk
+
+.input block_1
+pinlist:    net_1 
+
+.input block_2
+pinlist:    net_2 
+
+.clb block_3
+pinlist:    net_1  open  open  open   net_3  open 
+subblock: block_3 0 open open open  4  open
+
+.clb block_4
+pinlist:    net_1   net_2   net_8  open   net_4  open 
+subblock: block_4 0 1 2 open  4  open
+
+.clb block_5
+pinlist:    net_1   net_2  open  open   net_5  open 
+subblock: block_5 0 1 open open  4  open
+
+.clb block_6
+pinlist:    net_3   net_4  open  open   net_6  clk 
+subblock: block_6 0 1 open open  4 5
+
+.clb block_7
+pinlist:    net_4  open  open  open   net_7  open 
+subblock: block_7 0 open open open  4  open
+
+.clb block_8
+pinlist:    net_5  open  open  open   net_8  clk 
+subblock: block_8 0 open open open  4 5
+
+.clb block_9
+pinlist:    net_6   net_1  open  open   net_9  open 
+subblock: block_9 0 1 open open  4  open
+
+.clb block_10
+pinlist:    net_7   net_8  open  open   net_10  clk 
+subblock: block_10 0 1 open open  4 5
+
+.output block_11
+pinlist:    net_9 
+
+.output block_12
+pinlist:    net_7 
+
+.output block_13
+pinlist:    net_10 
+
